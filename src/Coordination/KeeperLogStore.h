@@ -75,7 +75,7 @@ public:
     void setRaftServer(const nuraft::ptr<nuraft::raft_server> & raft_server);
 
     void getKeeperLogInfo(KeeperLogInfo & log_info) const;
-
+    void getChangelogInfo(ChangelogInfo & changelog_info) const;
 private:
     mutable std::mutex changelog_lock;
     LoggerPtr log;

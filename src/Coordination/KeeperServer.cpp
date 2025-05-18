@@ -1287,6 +1287,19 @@ KeeperLogInfo KeeperServer::getKeeperLogInfo()
     return log_info;
 }
 
+ChangelogInfo KeeperServer::getChanglogInfo()
+{
+    ChangelogInfo changlog_info;
+    auto log_store = state_manager->load_log_store();
+    if (log_store)
+    {
+        const auto & keeper_log_storage = static_cast<const KeeperLogStore &>(*log_store);
+        keeper_log_storage.getChangelogInfo(log_info);
+    }
+
+    return changlog_info;
+}
+
 bool KeeperServer::requestLeader()
 {
     return isLeader() || raft_instance->request_leadership();

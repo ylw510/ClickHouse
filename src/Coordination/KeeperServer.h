@@ -147,7 +147,7 @@ public:
     uint64_t createSnapshot();
 
     KeeperLogInfo getKeeperLogInfo();
-
+    ChangelogInfo getChanglogInfo();
     bool requestLeader();
 
     void yieldLeadership();

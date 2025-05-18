@@ -76,5 +76,9 @@ struct KeeperLogInfo
     uint64_t commit_logs_cache_entries;
     uint64_t commit_logs_cache_size;
 };
-
+/// Changelog log information for 4lw commands
+struct ChangelogInfo
+{
+//TODO
+};
 }

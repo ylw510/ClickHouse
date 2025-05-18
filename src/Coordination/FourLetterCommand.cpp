@@ -206,6 +206,9 @@ void FourLetterCommandFactory::registerCommands(KeeperDispatcher & keeper_dispat
         FourLetterCommandPtr profile_events_command = std::make_shared<ProfileEventsCommand>(keeper_dispatcher);
         factory.registerCommand(profile_events_command);
 
+        FourLetterCommandPtr changlog_info_command = std::make_shared<ChangelogInfoCommand>(keeper_dispatcher);
+        factory.registerCommand(changlog_info_command);
+
         factory.initializeAllowList(keeper_dispatcher);
         factory.setInitialize(true);
     }
@@ -690,6 +693,23 @@ String ProfileEventsCommand::run()
 #endif
 
     return ret.str();
+}
+
+String ChangelogInfoCommand::run()
+{
+    
+    ChangelogInfo log_info = keeper_dispatcher.getChangelogInfo();
+    StringBuffer ret;
+
+    auto append = [&ret] (String key, uint64_t value) -> void
+    {
+        writeText(key, ret);
+        writeText('\t', ret);
+        writeText(std::to_string(value), ret);
+        writeText('\n', ret);
+    };
+    //TODO
+    return ret.str(); 
 }
 
 }

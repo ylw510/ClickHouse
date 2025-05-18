@@ -154,4 +154,10 @@ void KeeperLogStore::getKeeperLogInfo(KeeperLogInfo & log_info) const
     changelog.getKeeperLogInfo(log_info);
 }
 
+void getChangelogInfo(ChangelogInfo & changelog_info) const
+{
+    std::lock_guard lock(changelog_lock);
+    changelog.dumpInfo(changelog_info);
+}
+
 }

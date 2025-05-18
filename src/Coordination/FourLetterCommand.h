@@ -491,4 +491,15 @@ struct ProfileEventsCommand : public IFourLetterCommand
     ~ProfileEventsCommand() override = default;
 };
 
+struct ChangelogInfoCommand : public IFourLetterCommand
+{
+    explicit ChangelogInfoCommand(KeeperDispatcher & keeper_dispatcher_)
+        : IFourLetterCommand(keeper_dispatcher_)
+    {
+    }
+
+    String name() override { return "clif"; }
+    String run() override;
+    ~ChangelogInfoCommand() override = default;
+};
 }
