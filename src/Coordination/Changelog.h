@@ -377,7 +377,7 @@ public:
     bool isInitialized() const;
 
     void getKeeperLogInfo(KeeperLogInfo & log_info) const;
-
+    void buildChangeLogInfo(ChangelogInfo & changelog_info) const;
     /// Fsync log to disk
     ~Changelog();
 

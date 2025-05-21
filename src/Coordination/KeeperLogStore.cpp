@@ -157,7 +157,7 @@ void KeeperLogStore::getKeeperLogInfo(KeeperLogInfo & log_info) const
 void getChangelogInfo(ChangelogInfo & changelog_info) const
 {
     std::lock_guard lock(changelog_lock);
-    changelog.dumpInfo(changelog_info);
+    changelog.buildChangeLogInfo(changelog_info);
 }
 
 }

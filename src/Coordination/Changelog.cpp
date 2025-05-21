@@ -39,6 +39,11 @@ namespace ProfileEvents
 namespace DB
 {
 
+namespace CurrentMetrics
+{
+    extern const Metric ChangelogFlushMemoryTracking;
+}
+
 namespace ErrorCodes
 {
     extern const int CHECKSUM_DOESNT_MATCH;
@@ -2053,6 +2058,16 @@ void Changelog::writeThread()
     size_t pending_appends = 0;
     bool try_batch_flush = false;
 
+    Int64 memory_usage_before_write = 0;
+    Int64 memory_usage = 0;
+    if (current_thread)
+    {
+        auto & thread_memory_tracker = current_thread->memory_tracker;
+    
+        if (thread_memory_tracker)
+            memory_usage_before_write = thread_memory_tracker->get() + + current_thread->untracked_memory;
+    }
+
     const auto flush_logs = [&](const auto & flush)
     {
         LOG_TEST(log, "Flushing {} logs", pending_appends);
@@ -2147,6 +2162,18 @@ void Changelog::writeThread()
                 notify_append_completion();
                 batch_append_ok = true;
             }
+            if (current_thread)
+            {
+                auto & thread_memory_tracker = current_thread->memory_tracker;
+            
+                if (thread_memory_tracker)
+                {
+                    memory_usage = thread_memory_tracker->get() + current_thread->untracked_memory 
+                                        - memory_usage_before_write;
+                    CurrentMetrics::set(ChangelogFlushMemoryTracking, memory_usage);
+                }
+            }
+
         }
     }
     catch (...)
@@ -2527,6 +2554,17 @@ void Changelog::getKeeperLogInfo(KeeperLogInfo & log_info) const
     }
 
     entry_storage.getKeeperLogInfo(log_info);
+}
+
+void Changelog::buildChangeLogInfo(ChangelogInfo & changelog_info)
+{
+    //TODO: LogEntryStorage statistics
+
+    //write_operations
+    Int64 write_operations_num_in_queue = write_operations.size();
+    Int64 wirte_operations_queue_limit = write_operations.max_fill;
+    //memory usage statistics
+    changelog_info.flush_memory_usage = CurrentMetrics::get(ChangelogFlushMemoryTracking);
 }
 
 }

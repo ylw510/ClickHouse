@@ -1294,7 +1294,7 @@ ChangelogInfo KeeperServer::getChanglogInfo()
     if (log_store)
     {
         const auto & keeper_log_storage = static_cast<const KeeperLogStore &>(*log_store);
-        keeper_log_storage.getChangelogInfo(log_info);
+        keeper_log_storage.getChangelogInfo(changlog_info);
     }
 
     return changlog_info;

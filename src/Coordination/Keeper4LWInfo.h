@@ -79,6 +79,10 @@ struct KeeperLogInfo
 /// Changelog log information for 4lw commands
 struct ChangelogInfo
 {
-//TODO
+    Int64 wirte_operations_queue_limit;
+    Int64 write_operations_num_in_queue;
+    Int64 flush_memory_usage;
+
+
 };
 }

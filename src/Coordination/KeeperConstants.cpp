@@ -300,6 +300,9 @@
     M(KeeperLogsEntryReadFromCommitCache) \
     M(KeeperLogsEntryReadFromFile) \
     M(KeeperLogsPrefetchedEntries) \
+\
+    M(ChanglogFlushMemoryTracking)\
+\
 
 namespace ProfileEvents
 {
@@ -375,7 +378,7 @@ extern const std::vector<Event> keeper_profile_events
     M(ThreadsInOvercommitTracker) \
     M(IOUringPendingEvents) \
     M(IOUringInFlightEvents) \
-
+    M(ChangelogFlushMemoryTracking) \
 namespace CurrentMetrics
 {
 #define M(NAME) extern const Metric NAME;
