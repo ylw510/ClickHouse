@@ -42,6 +42,7 @@ namespace DB
 namespace CurrentMetrics
 {
     extern const Metric ChangelogFlushMemoryTracking;
+    extern const Metric ChangelogMemoryTracking;
 }
 
 namespace ErrorCodes
@@ -733,6 +734,9 @@ LogEntryStorage::~LogEntryStorage()
 
 void LogEntryStorage::prefetchCommitLogs()
 {
+    auto thread_group = ThreadGroup::createForBackgroundProcess(getContext());
+    ThreadGroupSwitcher switcher(thread_group, "ChanglogThreadGroup");
+
     std::shared_ptr<PrefetchInfo> prefetch_info;
     while (prefetch_queue.pop(prefetch_info))
     {
@@ -1706,6 +1710,8 @@ Changelog::Changelog(
         append_completion_thread = std::make_unique<ThreadFromGlobalPool>([this] { appendCompletionThread(); });
 
         current_writer = std::make_unique<ChangelogWriter>(existing_changelogs, entry_storage, keeper_context, log_file_settings);
+
+        changelog_memory_tracker.initChangelogMemoryTracker();
     }
     catch (...)
     {
@@ -2037,6 +2043,9 @@ ChangelogRecord Changelog::buildRecord(uint64_t index, const LogEntryPtr & log_e
 }
 void Changelog::appendCompletionThread()
 {
+    if (current_thread)
+        current_thread->memory_tracker.setParent(&changelog_memory_tracker);    
+        
     bool append_ok = false;
     while (append_completion_queue.pop(append_ok))
     {
@@ -2062,8 +2071,9 @@ void Changelog::writeThread()
     Int64 memory_usage = 0;
     if (current_thread)
     {
+        current_thread->memory_tracker.setParent(&changelog_memory_tracker);
         auto & thread_memory_tracker = current_thread->memory_tracker;
-    
+           
         if (thread_memory_tracker)
             memory_usage_before_write = thread_memory_tracker->get() + + current_thread->untracked_memory;
     }
@@ -2511,6 +2521,9 @@ Changelog::~Changelog()
 
 void Changelog::cleanLogThread()
 {
+    if (current_thread)
+        current_thread->memory_tracker.setParent(&changelog_memory_tracker);
+
     std::pair<std::string, DiskPtr> path_with_disk;
     while (log_files_to_delete_queue.pop(path_with_disk))
     {
@@ -2564,7 +2577,15 @@ void Changelog::buildChangeLogInfo(ChangelogInfo & changelog_info)
     Int64 write_operations_num_in_queue = write_operations.size();
     Int64 wirte_operations_queue_limit = write_operations.max_fill;
     //memory usage statistics
-    changelog_info.flush_memory_usage = CurrentMetrics::get(ChangelogFlushMemoryTracking);
+    changelog_info.flush_memory_usage = CurrentMetrics::get(CurrentMetrics::ChangelogFlushMemoryTracking);
+    changelog_info.total_threads_memory_usage = CurrentMetrics::get(CurrentMetrics::ChangelogMemoryTracking);
+}
+
+void ChangelogMemoryTracker::initChangelogMemoryTracker()
+{
+    memory_tracker.setParent(&total_memory_tracker);
+    memory_tracker.setDescription("Track the memory usage of all threads in the Changelog module.");
+    memory_tracker.setMetric(CurrentMetrics::ChangelogMemoryTracking);
 }
 
 }

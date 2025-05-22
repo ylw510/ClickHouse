@@ -305,6 +305,17 @@ private:
     LoggerPtr log;
 };
 
+//Changelog Memory Tracker
+class ChangelogMemoryTracker
+{
+public:
+    ChangelogMemoryTracker() = default;
+    void initChangelogMemoryTracker();
+    MemoryTracker & getMemoryTracker();
+private:
+    MemoryTracker memory_tracker{VariableContext::Process};
+}
+
 /// Simplest changelog with files rotation.
 /// No compression, no metadata, just entries with headers one by one.
 /// Able to read broken files/entries and discard them. Not thread safe.
@@ -462,6 +473,7 @@ private:
     const FlushSettings flush_settings;
 
     bool initialized = false;
+    ChangelogMemoryTracker changelog_memory_tracker;
 };
 
 }

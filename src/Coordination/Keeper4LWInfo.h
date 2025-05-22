@@ -82,7 +82,7 @@ struct ChangelogInfo
     Int64 wirte_operations_queue_limit;
     Int64 write_operations_num_in_queue;
     Int64 flush_memory_usage;
-
+    Int64 total_threads_memory_usage;
 
 };
 }
