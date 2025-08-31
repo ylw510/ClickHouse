@@ -113,6 +113,15 @@ JoinResultPtr HashJoinMethods<KIND, STRICTNESS, MapsTemplate>::joinBlockImpl(
     /// Do not hold memory for join_on_keys anymore
     added_columns.join_on_keys.clear();
 
+    for (size_t i = 0; i < block.getSourceBlock().columns(); ++i)
+    {
+        auto column = block.getSourceBlock().getByPosition(i);
+        for (size_t j = 0; j < column.column->size(); ++j)
+        {
+            LOG_DEBUG(getLogger("joinBlockImpl"), "current column:{},index:{},value:{}",
+                                column.name, j, toString((*column.column)[j]));
+        }
+    }
     return std::make_unique<HashJoinResult>(
         std::move(added_columns.lazy_output),
         std::move(added_columns.columns),

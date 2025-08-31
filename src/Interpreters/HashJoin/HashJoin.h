@@ -22,7 +22,6 @@
 #include <Common/HashTable/HashMap.h>
 #include <Common/HashTable/HashTableTraits.h>
 #include <Common/HashTable/TwoLevelHashMap.h>
-
 namespace DB
 {
 

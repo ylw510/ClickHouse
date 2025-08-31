@@ -600,6 +600,16 @@ bool HashJoin::addBlockToJoin(const Block & block, ScatteredBlock::Selector sele
     if (!data)
         throw Exception(ErrorCodes::LOGICAL_ERROR, "Join data was released");
 
+    for (size_t i = 0; i < block.columns(); ++i)
+    {
+        auto column = block.getByPosition(i);
+        for (size_t j = 0; j < column.column->size(); ++j)
+        {
+            LOG_DEBUG(getLogger("addBlockToJoin"), "current column:{},index:{},value:{}",
+                                column.name, j, toString((*column.column)[j]));
+        }
+    }    
+
     /// RowRef::SizeT is uint32_t (not size_t) for hash table Cell memory efficiency.
     /// It's possible to split bigger blocks and insert them by parts here. But it would be a dead code.
     if (unlikely(selector.size() > std::numeric_limits<RowRef::SizeT>::max()))
@@ -700,6 +710,20 @@ bool HashJoin::addBlockToJoin(const Block & block, ScatteredBlock::Selector sele
         doDebugAsserts();
         data->columns.emplace_back(block_to_save.getColumns(), std::move(selector));
         const auto * stored_columns = &data->columns.back();
+
+    for (auto & sorted_column : data->columns)
+    {
+        LOG_DEBUG(getLogger("stored_columns"), "sorted column size:{}", data->columns.size());
+        for (size_t i = 0; i < sorted_column.columns.size(); ++i)
+        {
+            for (size_t j = 0; j < sorted_column.columns[i]->size(); ++j)
+            {
+                LOG_DEBUG(getLogger("stored_columns"), "current column:{},index:{},value:{}",
+                                    sorted_column.columns[i]->getName(), j, toString((*sorted_column.columns[i])[j]));
+            }                                
+        }
+    }
+
         size_t data_allocated_bytes = stored_columns->allocatedBytes();
         data->allocated_size += data_allocated_bytes;
         doDebugAsserts();
@@ -1124,6 +1148,7 @@ JoinResultPtr HashJoin::joinBlock(Block block)
 
     for (const auto & onexpr : table_join->getClauses())
     {
+        LOG_DEBUG(getLogger("HashJoin"), "join clause:{}",onexpr.formatDebug());
         auto cond_column_name = onexpr.condColumnNames();
         JoinCommon::checkTypesOfKeys(
             block, onexpr.key_names_left, cond_column_name.first, right_sample_block, onexpr.key_names_right, cond_column_name.second);
@@ -1152,7 +1177,7 @@ JoinResultPtr HashJoin::joinBlock(Block block)
                     if constexpr (std::is_same_v<std::decay_t<decltype(maps_vector_)>, std::vector<const MapsAll *>>)
                     {
                         res = HashJoinMethods<kind_, strictness_, MapsAll>::joinBlockImpl(
-                            *this, std::move(block), sample_block_with_columns_to_add, maps_vector_);
+                            *this, std::move(block), sample_block_with_columns_to_add, maps_vector_);                      
                     }
                     else if constexpr (std::is_same_v<std::decay_t<decltype(maps_vector_)>, std::vector<const MapsOne *>>)
                     {
@@ -1696,18 +1721,95 @@ void HashJoin::tryRerangeRightTableDataImpl(Map & map [[maybe_unused]])
 
             auto & columns = columns_list.back().columns;
             size_t start_row = columns.at(0)->size();
-            for (; it.ok(); ++it)
+            LOG_DEBUG(getLogger("merge_rows_into_one_block"), "start_row:{}", start_row);
+            size_t index = start_row;
+            
+            RowRefList new_rows_ref;
+            size_t output_by_row_list_threshold = table_join->outputByRowListPerkeyRowsThreshold();
+            size_t join_data_avg_perkey_rows = data->avgPerKeyRows();            
+            if (join_data_avg_perkey_rows < output_by_row_list_threshold)
             {
-                for (size_t i = 0; i < columns.size(); ++i)
+                for (; it.ok(); ++it)
                 {
-                    auto & col = columns[i]->assumeMutableRef();
-                    col.insertFrom(*((*it->columns)[i]), it->row_num);
+                    LOG_DEBUG(getLogger("merge_rows_into_one_block"), "index:{}", index);
+                    
+                    for (size_t i = 0; i < columns.size(); ++i)
+                    {
+                        auto & col = columns[i]->assumeMutableRef();
+                        col.insertFrom(*((*it->columns)[i]), it->row_num);
+
+                        for (size_t j = 0; j < col.size(); ++j)
+                        {
+                            LOG_DEBUG(getLogger("merge_rows_into_one_block"), "current column:{},index:{},value:{}.row_num:{}",
+                                                col.getName(), j, toString((col)[j]), it->row_num);
+                        }
+                    }
+                    new_rows_ref.insert({&columns, index}, data->pool);
+                    index ++;
                 }
             }
+            else
+            {
+                for (; it.ok(); ++it)
+                {
+                    LOG_DEBUG(getLogger("merge_rows_into_one_block"), "index:{}", index);
+                    
+                    for (size_t i = 0; i < columns.size(); ++i)
+                    {
+                        auto & col = columns[i]->assumeMutableRef();
+                        col.insertFrom(*((*it->columns)[i]), it->row_num);
+
+                        for (size_t j = 0; j < col.size(); ++j)
+                        {
+                            LOG_DEBUG(getLogger("merge_rows_into_one_block"), "current column:{},index:{},value:{}.row_num:{}",
+                                                col.getName(), j, toString((col)[j]), it->row_num);
+                        }
+                    }
+                }
+            }
+
+            // RowRefList new_rows_ref;
+            // for (; it.ok(); ++it)
+            // {
+            //     LOG_DEBUG(getLogger("merge_rows_into_one_block"), "index:{}", index);
+                
+            //     for (size_t i = 0; i < columns.size(); ++i)
+            //     {
+            //         auto & col = columns[i]->assumeMutableRef();
+            //         col.insertFrom(*((*it->columns)[i]), it->row_num);
+
+            //         for (size_t j = 0; j < col.size(); ++j)
+            //         {
+            //             LOG_DEBUG(getLogger("merge_rows_into_one_block"), "current column:{},index:{},value:{}.row_num:{}",
+            //                                 col.getName(), j, toString((col)[j]), it->row_num);
+            //         }
+            //     }
+            //     new_rows_ref.insert({&columns, index}, data->pool);
+            //     index ++;
+            // }
             size_t new_rows = columns.at(0)->size();
+            LOG_DEBUG(getLogger("merge_rows_into_one_block"), "new_rows:{}", new_rows);
+            
             if (new_rows > start_row)
             {
-                RowRefList new_rows_ref(&columns, start_row, new_rows - start_row);
+                if (join_data_avg_perkey_rows >= output_by_row_list_threshold)
+                {
+                    new_rows_ref = RowRefList(&columns, start_row, new_rows - start_row);
+                    //new_rows_ref.rows = new_rows - start_row;
+                }
+                //RowRefList new_rows_ref(&columns, start_row, new_rows - start_row);
+                //new_rows_ref.rows = new_rows - start_row;
+                for (auto iter = new_rows_ref.begin(); iter.ok(); ++iter)
+                {
+                    for (auto & col : *iter->columns)
+                    {
+                        for (size_t i = 0; i < col->size(); ++i)
+                        {
+                        LOG_DEBUG(getLogger("new_rows_ref"), "current column:{},index:{},value:{}",
+                                                    col->getName(), i, toString((*col)[i]));   
+                        }
+                    }
+                }
                 rows_ref = std::move(new_rows_ref);
             }
         };
@@ -1730,6 +1832,32 @@ void HashJoin::tryRerangeRightTableDataImpl(Map & map [[maybe_unused]])
         ScatteredColumnsList sorted_columns;
         visit_rows_map(sorted_columns, map);
         doDebugAsserts();
+
+    for (auto & sorted_column : sorted_columns)
+    {
+        LOG_DEBUG(getLogger("tryRerangeRightTableDataImpl"), "sorted column size:{}", sorted_columns.size());
+        for (size_t i = 0; i < sorted_column.columns.size(); ++i)
+        {
+            for (size_t j = 0; j < sorted_column.columns[i]->size(); ++j)
+            {
+                LOG_DEBUG(getLogger("tryRerangeRightTableDataImpl"), "current column:{},index:{},value:{}",
+                                    sorted_column.columns[i]->getName(), j, toString((*sorted_column.columns[i])[j]));
+            }                                
+        }
+    }
+    for (auto & sorted_column : data->columns)
+    {
+        LOG_DEBUG(getLogger("data->columns"), "sorted column size:{}", sorted_columns.size());
+        for (size_t i = 0; i < sorted_column.columns.size(); ++i)
+        {
+            for (size_t j = 0; j < sorted_column.columns[i]->size(); ++j)
+            {
+                LOG_DEBUG(getLogger("data->columns"), "current column:{},index:{},value:{}",
+                                    sorted_column.columns[i]->getName(), j, toString((*sorted_column.columns[i])[j]));
+            }                                
+        }
+    }
+
         data->columns.swap(sorted_columns);
         size_t new_blocks_allocated_size = 0;
         for (auto & columns : data->columns)
@@ -1763,6 +1891,16 @@ void HashJoin::tryRerangeRightTableData()
     if (!rightTableCanBeReranged())
         return;
 
+    LOG_DEBUG(getLogger("ConditionalHashJoin"), "Try to rerange the right table data by join keys."
+                                                "data->sorted:{}, data->columns.empty():{}, data->columns.size:{},"
+                                                "data->maps.size():{}, "
+                                            "data->rows_to_join:{},keys_to_join:{}, table_join->sortRightMaximumTableRows():{},"
+                                            "data->avgPerKeyRows():{}, "
+                                            "table_join->sortRightMinimumPerkeyRows():{}",
+                                            data->sorted, data->columns.empty(), data->columns.size(),data->maps.size(),
+                                    data->rows_to_join, data->keys_to_join, table_join->sortRightMaximumTableRows(),
+                                    data->avgPerKeyRows(), table_join->sortRightMinimumPerkeyRows());
+
     /// We should not rerange the right table on such conditions:
     /// 1. the right table is already reranged by key or it is empty.
     /// 2. the join clauses size is greater than 1, like `...join on a.key1=b.key1 or a.key2=b.key2`, we can not rerange the right table on different set of keys.
@@ -1770,6 +1908,16 @@ void HashJoin::tryRerangeRightTableData()
     /// 4. the keys of right table is very sparse, which may result in insignificant performance improvement after reranging by key.
     if (!data || data->sorted || data->columns.empty() || data->maps.size() > 1 || data->rows_to_join > table_join->sortRightMaximumTableRows() ||  data->avgPerKeyRows() < table_join->sortRightMinimumPerkeyRows())
         return;
+
+    LOG_DEBUG(getLogger("ConditionalHashJoin"), "Try to rerange the right table data by join keys."
+                                                "data->sorted:{}, data->columns.empty():{}, data->columns.size:{},"
+                                                "data->maps.size():{}, "
+                                            "data->rows_to_join:{}, keys_to_join:{}, table_join->sortRightMaximumTableRows():{},"
+                                            "data->avgPerKeyRows():{}, "
+                                            "table_join->sortRightMinimumPerkeyRows():{}",
+                                            data->sorted, data->columns.empty(), data->columns.size(),data->maps.size(),
+                                    data->rows_to_join, data->keys_to_join, table_join->sortRightMaximumTableRows(),
+                                    data->avgPerKeyRows(), table_join->sortRightMinimumPerkeyRows());
 
     if (data->keys_to_join == 0)
         data->keys_to_join = getTotalRowCount();

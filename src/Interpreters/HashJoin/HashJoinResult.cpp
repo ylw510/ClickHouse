@@ -83,6 +83,15 @@ static void appendRightColumns(
     size_t existing_columns = block.columns();
     const auto & table_join = properties.table_join;
 
+    for (size_t i = 0; i < block.columns(); ++i)
+    {
+        auto column = block.getByPosition(i);
+        for (size_t j = 0; j < column.column->size(); ++j)
+        {
+            LOG_DEBUG(getLogger("generateBlock1"), "current column:{},index:{},value:{}",
+                                column.name, j, toString((*column.column)[j]));
+        }
+    }
     std::set<size_t> block_columns_to_erase;
     if (HashJoin::canRemoveColumnsFromLeftBlock(table_join))
     {
@@ -100,11 +109,26 @@ static void appendRightColumns(
     {
         ColumnWithTypeAndName col;
         col.column = std::move(columns[i]);
+
         col.name = table_join.renamedRightColumnName(type_name[i].name);
         col.type = type_name[i].type;
+        for (size_t j = 0; j < col.column->size(); ++j)
+        {
+            LOG_DEBUG(getLogger("MutableColumn"), "current column:{},index:{},value:{}",
+                                        col.name, j, toString((*col.column)[j]));   
+        }
+     
         block.insert(std::move(col));
     }
-
+    for (size_t i = 0; i < block.columns(); ++i)
+    {
+        auto column = block.getByPosition(i);
+        for (size_t j = 0; j < column.column->size(); ++j)
+        {
+            LOG_DEBUG(getLogger("generateBlock2"), "current column:{},index:{},value:{}",
+                                column.name, j, toString((*column.column)[j]));
+        }
+    }
     bool is_asof_join = table_join.strictness() == JoinStrictness::Asof;
     std::vector<size_t> right_keys_to_replicate;
 
@@ -125,7 +149,15 @@ static void appendRightColumns(
         if (!offsets.empty())
             right_keys_to_replicate.push_back(block.getPositionByName(right_col_name));
     }
-
+    for (size_t i = 0; i < block.columns(); ++i)
+    {
+        auto column = block.getByPosition(i);
+        for (size_t j = 0; j < column.column->size(); ++j)
+        {
+            LOG_DEBUG(getLogger("generateBlock3"), "current column:{},index:{},value:{}",
+                                column.name, j, toString((*column.column)[j]));
+        }
+    }
     if (!offsets.empty())
     {
         chassert(!block.empty());
@@ -134,12 +166,44 @@ static void appendRightColumns(
         auto columns_to_replicate = block.getColumns();
         for (size_t i = 0; i < existing_columns; ++i)
             columns_to_replicate[i] = columns_to_replicate[i]->replicate(offsets);
+
+
+    for (auto column : columns_to_replicate)
+    {
+        for (size_t j = 0; j < column->size(); ++j)
+        {
+            LOG_DEBUG(getLogger("columns_to_replicate1"), "current column:{},index:{},value:{}",
+                                column->getName(), j, toString((*column)[j]));
+        }
+    }
+
+
+
         for (size_t pos : right_keys_to_replicate)
             columns_to_replicate[pos] = columns_to_replicate[pos]->replicate(offsets);
 
+
+
+    for (auto column : columns_to_replicate)
+    {
+        for (size_t j = 0; j < column->size(); ++j)
+        {
+            LOG_DEBUG(getLogger("columns_to_replicate2"), "current column:{},index:{},value:{}",
+                                column->getName(), j, toString((*column)[j]));
+        }
+    } 
+            
         block.setColumns(columns_to_replicate);
     }
-
+    for (size_t i = 0; i < block.columns(); ++i)
+    {
+        auto column = block.getByPosition(i);
+        for (size_t j = 0; j < column.column->size(); ++j)
+        {
+            LOG_DEBUG(getLogger("generateBlock4"), "current column:{},index:{},value:{}",
+                                column.name, j, toString((*column.column)[j]));
+        }
+    }
     block.erase(block_columns_to_erase);
 }
 
@@ -155,6 +219,29 @@ static Block generateBlock(
     const IColumn::Filter & filter,
     std::span<UInt64> matched_rows)
 {
+    for (size_t i = 0; i < scattered_block.getSourceBlock().columns(); ++i)
+    {
+        auto column = scattered_block.getSourceBlock().getByPosition(i);
+        for (size_t j = 0; j < column.column->size(); ++j)
+        {
+            LOG_DEBUG(getLogger("generateBlock"), "current column:{},index:{},value:{}",
+                                column.name, j, toString((*column.column)[j]));
+        }
+    }
+
+    for (size_t i = 0; i < columns.size(); ++i)
+    {
+        ColumnWithTypeAndName col;
+        col.name = properties.table_join.renamedRightColumnName(lazy_output.type_name[i].name);
+        col.type = lazy_output.type_name[i].type;
+        for (size_t j = 0; j < columns[i]->size(); ++j)
+        {
+            LOG_DEBUG(getLogger("MutableColumn0"), "current column:{},index:{},value:{}",
+                                        col.name, j, toString((*columns[i])[j]));   
+        }
+     
+    }
+
     const auto * off_data = lazy_output.row_refs.data();
     if (properties.is_join_get)
         lazy_output.buildJoinGetOutput(
@@ -173,6 +260,7 @@ static Block generateBlock(
     scattered_block.filterBySelector();
 
     auto block = std::move(scattered_block).getSourceBlock();
+
     appendRightColumns(
         block,
         std::move(columns),
@@ -251,6 +339,16 @@ IJoinResult::JoinResultBlock HashJoinResult::next()
     if (!scattered_block)
         return {};
 
+    for (size_t i = 0; i < scattered_block->getSourceBlock().columns(); ++i)
+    {
+        auto column = scattered_block->getSourceBlock().getByPosition(i);
+        for (size_t j = 0; j < column.column->size(); ++j)
+        {
+            LOG_DEBUG(getLogger("HashJoinResult::next"), "current column:{},index:{},value:{}",
+                                column.name, j, toString((*column.column)[j]));
+        }
+    }
+
     size_t avg_bytes_per_row = properties.avg_joined_bytes_per_row + getAvgBytesPerRow(scattered_block->getSourceBlock());
     auto num_lhs_rows = numLeftRowsForNextBlock(next_row, offsets, properties.max_joined_block_rows, properties.max_joined_block_bytes, avg_bytes_per_row);
     if (num_lhs_rows == 0 || (next_row == 0 && num_lhs_rows >= scattered_block->rows()))
@@ -268,6 +366,20 @@ IJoinResult::JoinResultBlock HashJoinResult::next()
             std::span<UInt64>{matched_rows});
 
         scattered_block.reset();
+
+    LOG_DEBUG(getLogger("HashJoinResult"), "after generateBlock.Block trans start");
+
+    for (size_t i = 0; i < block.columns(); ++i)
+    {
+        auto column = block.getByPosition(i);
+        for (size_t j = 0; j < column.column->size(); ++j)
+        {
+            LOG_DEBUG(getLogger("HashJoinResult"), "current column:{},index:{},value:{}",
+                                column.name, j, toString((*column.column)[j]));
+        }
+    }
+    LOG_DEBUG(getLogger("HashJoinResult"), "after generateBlock.Block trans end");
+
         return {std::move(block), true};
     }
 
@@ -354,6 +466,19 @@ IJoinResult::JoinResultBlock HashJoinResult::next()
             next_columns.push_back(column->cloneEmpty());
     }
 
+    LOG_DEBUG(getLogger("HashJoinResult"), "before generateBlock.Block trans start");
+
+    for (size_t i = 0; i < current_block.getSourceBlock().columns(); ++i)
+    {
+        auto column = current_block.getSourceBlock().getByPosition(i);
+        for (size_t j = 0; j < column.column->size(); ++j)
+        {
+            LOG_DEBUG(getLogger("HashJoinResult"), "current column:{},index:{},value:{}",
+                                column.name, j, toString((*column.column)[j]));
+        }
+    }
+    LOG_DEBUG(getLogger("HashJoinResult"), "before generateBlock.Block trans end");
+
     auto block = generateBlock(
         std::move(current_block),
         lazy_output,
@@ -365,6 +490,20 @@ IJoinResult::JoinResultBlock HashJoinResult::next()
         partial_offsets,
         partial_filter,
         partial_matched_rows);
+
+    LOG_DEBUG(getLogger("HashJoinResult"), "after generateBlock.Block trans start");
+
+    for (size_t i = 0; i < block.columns(); ++i)
+    {
+        auto column = block.getByPosition(i);
+        for (size_t j = 0; j < column.column->size(); ++j)
+        {
+            LOG_DEBUG(getLogger("HashJoinResult"), "current column:{},index:{},value:{}",
+                                column.name, j, toString((*column.column)[j]));
+        }
+    }
+    LOG_DEBUG(getLogger("HashJoinResult"), "after generateBlock.Block trans end");
+
 
     columns = std::move(next_columns);
     if (is_last)

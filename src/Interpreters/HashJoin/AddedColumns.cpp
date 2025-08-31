@@ -28,6 +28,8 @@ void LazyOutput::buildOutput(size_t size_to_reserve, MutableColumns & columns, c
         buildOutputFromBlocks<false>(size_to_reserve, columns, row_refs_begin, row_refs_end);
     else
     {
+        LOG_DEBUG(getLogger("LazyOutput"), "join_data_avg_perkey_rows:{}, output_by_row_list_threshold:{}",
+                    join_data_avg_perkey_rows, output_by_row_list_threshold);
         if (join_data_avg_perkey_rows < output_by_row_list_threshold)
             buildOutputFromBlocks<true>(size_to_reserve, columns, row_refs_begin, row_refs_end);
         else
@@ -79,11 +81,25 @@ void LazyOutput::buildOutputFromBlocks(size_t size_to_reserve, MutableColumns & 
     row_nums.reserve(size_to_reserve);
     for (const UInt64 * row_ref_i = row_refs_begin; row_ref_i != row_refs_end; ++row_ref_i)
     {
+
         if (*row_ref_i)
         {
             if constexpr (from_row_list)
             {
                 const RowRefList * row_ref_list = reinterpret_cast<const RowRefList *>(*row_ref_i);
+        for (auto it = row_ref_list->begin(); it.ok(); ++it)
+        {
+            for (auto & col : *it->columns)
+            {
+                for (size_t i = 0; i < col->size(); ++i)
+                {
+                LOG_DEBUG(getLogger("from_row_list"), "current column:{},index:{},value:{}",
+                                            col->getName(), i, toString((*col)[i]));   
+                }
+            }
+        }
+
+
                 for (auto it = row_ref_list->begin(); it.ok(); ++it)
                 {
                     many_columns.emplace_back(it->columns);
@@ -93,6 +109,14 @@ void LazyOutput::buildOutputFromBlocks(size_t size_to_reserve, MutableColumns & 
             else
             {
                 const RowRef * row_ref = reinterpret_cast<const RowRefList *>(*row_ref_i);
+        for (auto & col : *row_ref->columns)
+        {
+            for (size_t i = 0; i < col->size(); ++i)
+            {
+            LOG_DEBUG(getLogger("not_from_row_list"), "current column:{},index:{},value:{}",
+                                        col->getName(), i, toString((*col)[i]));   
+            }
+        }                
                 many_columns.emplace_back(row_ref->columns);
                 row_nums.emplace_back(row_ref->row_num);
             }
@@ -101,6 +125,26 @@ void LazyOutput::buildOutputFromBlocks(size_t size_to_reserve, MutableColumns & 
         {
             many_columns.emplace_back(nullptr);
             row_nums.emplace_back(0);
+        }
+    }
+
+    for (auto index : right_indexes)
+    {
+        LOG_DEBUG(getLogger("buildOutputFromBlocks"), "index:{}, right_indexes size:{}",index, right_indexes.size());
+    }
+    for (auto row_num : row_nums)
+    {
+        LOG_DEBUG(getLogger("buildOutputFromBlocks"), "row_num:{}, row_nums size:{}", row_num, row_nums.size());   
+    }
+    for (auto it = many_columns.begin(); it != many_columns.end(); ++it)
+    {
+        for (auto & col : *(*it))
+        {
+            for (size_t i = 0; i < col->size(); ++i)
+            {
+            LOG_DEBUG(getLogger("buildOutputFromBlocks"), "current column:{},index:{},value:{}",
+                                        col->getName(), i, toString((*col)[i]));   
+            }
         }
     }
     for (size_t i = 0; i < columns.size(); ++i)

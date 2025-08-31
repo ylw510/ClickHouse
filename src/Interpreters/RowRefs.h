@@ -131,6 +131,14 @@ struct RowRefList : RowRef
     /// insert element after current one
     void insert(RowRef && row_ref, Arena & pool)
     {
+        //init the first element
+        if (rows == 0)
+        {
+            columns = row_ref.columns;
+            row_num = row_ref.row_num;
+            ++rows;
+            return;
+        }
         if (!next)
         {
             next = pool.alloc<Batch>();

@@ -6,6 +6,7 @@
 #include <Interpreters/JoinUtils.h>
 #include <Processors/Port.h>
 #include <Common/logger_useful.h>
+#include  <Interpreters/HashJoin/HashJoin.h>
 
 namespace ProfileEvents
 {
@@ -183,7 +184,19 @@ void JoiningTransform::transform(Chunk & chunk)
             return;
         }
     }
-
+    LOG_DEBUG(getLogger("JoiningTransform"), "in transform.Chunk trans start");
+    for (size_t i = 0; i < chunk.getNumColumns(); ++i)
+    {
+        const auto & columns = chunk.getColumns();
+        auto column = columns.at(i);
+        for (size_t j = 0; j < column->size(); ++j)
+        {
+            LOG_DEBUG(getLogger("JoiningTransform"), "current column:{},index:{},value:{}",
+                                column->getName(), j, toString((*column)[j]));
+        }
+    }
+    LOG_DEBUG(getLogger("JoiningTransform"), "in transform.Chunk trans end");
+    
     Block res;
     if (on_totals)
     {
@@ -205,6 +218,19 @@ void JoiningTransform::transform(Chunk & chunk)
 
     if (res.rows())
     {
+    LOG_DEBUG(getLogger("JoiningTransform"), "in transform.Block trans start");
+
+        for (size_t i = 0; i < res.columns(); ++i)
+        {
+            auto column = res.getByPosition(i);
+            for (size_t j = 0; j < column.column->size(); ++j)
+            {
+                LOG_DEBUG(getLogger("JoiningTransform"), "current column:{},index:{},value:{}",
+                                    column.name, j, toString((*column.column)[j]));
+            }
+        }
+            LOG_DEBUG(getLogger("JoiningTransform"), "in transform.Block trans end");
+
         ProfileEvents::increment(ProfileEvents::JoinResultRowCount, res.rows());
         output_chunk = Chunk(res.getColumns(), res.rows());
     }
@@ -216,12 +242,39 @@ Block JoiningTransform::readExecute(Chunk & chunk)
     {
         Block block = inputs.front().getHeader().cloneWithColumns(chunk.detachColumns());
         ProfileEvents::increment(ProfileEvents::JoinProbeTableRowCount, block.rows());
-        join_result = join->joinBlock(std::move(block));
+
+    for (auto & sorted_column : dynamic_pointer_cast<HashJoin>(join)->getJoinedData()->columns)
+    {
+        LOG_DEBUG(getLogger("transform"), "sorted column size:{}", dynamic_pointer_cast<HashJoin>(join)->getJoinedData()->columns.size());
+        for (size_t i = 0; i < sorted_column.columns.size(); ++i)
+        {
+            for (size_t j = 0; j < sorted_column.columns[i]->size(); ++j)
+            {
+                LOG_DEBUG(getLogger("transform"), "current column:{},index:{},value:{}",
+                                    sorted_column.columns[i]->getName(), j, toString((*sorted_column.columns[i])[j]));
+            }                                
+        }
+    } 
+
+        join_result = join->joinBlock(std::move(block));   
     }
 
     auto data = join_result->next();
     if (data.is_last)
         join_result.reset();
+
+    LOG_DEBUG(getLogger("JoiningTransform"), "after join_result->next.Block trans start");
+
+    for (size_t i = 0; i < data.block.columns(); ++i)
+    {
+        auto column = data.block.getByPosition(i);
+        for (size_t j = 0; j < column.column->size(); ++j)
+        {
+            LOG_DEBUG(getLogger("JoiningTransform"), "current column:{},index:{},value:{}",
+                                column.name, j, toString((*column.column)[j]));
+        }
+    }
+    LOG_DEBUG(getLogger("JoiningTransform"), "after join_result->next.Block trans end");
 
     return std::move(data.block);
 }
