@@ -38,6 +38,7 @@ void DiskSelector::initialize(
     bool has_local_disk = false;
     for (const auto & disk_name : keys)
     {
+        LOG_DEBUG(getLogger("DiskSelector"), "Found disk entry: {}", disk_name);
         if (!std::all_of(disk_name.begin(), disk_name.end(), isWordCharASCII))
             throw Exception(ErrorCodes::EXCESSIVE_ELEMENT_IN_CONFIG, "Disk name can contain only alphanumeric and '_' ({})", disk_name);
 

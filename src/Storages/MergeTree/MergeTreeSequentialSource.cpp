@@ -270,7 +270,10 @@ try
         }
         result_column->assumeMutableRef().shrinkToFit();
     }
-
+    LOG_DEBUG(log, "Read {} rows from part {}, current mark {}/{}.current_rows_to_read {}",
+        read_result.num_rows, read_task_info->data_part->name, current_mark, index_granularity->getMarksCountWithoutFinal(),
+        current_rows_to_read
+        );
     auto result = Chunk(std::move(result_columns), read_result.num_rows);
     /// Part level is useful for next step for merging non-merge tree table
     bool add_part_level = storage.merging_params.mode != MergeTreeData::MergingParams::Ordinary;

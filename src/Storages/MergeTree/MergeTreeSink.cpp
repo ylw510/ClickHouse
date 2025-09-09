@@ -7,7 +7,7 @@
 #include <DataTypes/ObjectUtils.h>
 #include <Common/ProfileEventsScope.h>
 #include <Core/Settings.h>
-
+#include <base/sleep.h>
 
 namespace ProfileEvents
 {
@@ -36,6 +36,7 @@ MergeTreeSink::~MergeTreeSink()
 
     for (auto & partition : delayed_chunk->partitions)
     {
+        sleepForMilliseconds(10000);
         partition.temp_part->cancel();
     }
 
@@ -177,6 +178,11 @@ void MergeTreeSink::consume(Chunk & chunk)
         token_info->finishChunkHashes();
     }
 
+    // if(part_blocks.size() != 0)
+    // throw Exception(ErrorCodes::LOGICAL_ERROR,
+    //     "test write Temp file ,but not commit part for table: {}",
+    //     storage.getStorageID().getNameForLogs());
+
     finishDelayedChunk();
     delayed_chunk = std::make_unique<MergeTreeDelayedChunk>();
     delayed_chunk->partitions = std::move(partitions);
@@ -243,7 +249,12 @@ bool MergeTreeSink::commitPart(MergeTreeMutableDataPartPtr & part, const String 
                 LOG_INFO(storage.log, "Block with ID {} already exists as part {}; ignoring it", block_id, res.first.getPartNameForLogs());
                 return false;
             }
+        if(part)
+        throw Exception(ErrorCodes::LOGICAL_ERROR,
+            "test write Temp file ,but not commit part for table: {}",
+            storage.getStorageID().getNameForLogs());
         }
+
 
         /// FIXME: renames for MergeTree should be done under the same lock
         /// to avoid removing extra covered parts after merge.

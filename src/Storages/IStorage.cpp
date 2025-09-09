@@ -16,7 +16,8 @@
 #include <Storages/Statistics/ConditionSelectivityEstimator.h>
 #include <Backups/RestorerFromBackup.h>
 #include <Backups/IBackup.h>
-
+#include <Common/logger_useful.h>
+#include <Common/Logger.h>
 
 namespace DB
 {
@@ -371,8 +372,13 @@ bool IStorage::isStaticStorage() const
     if (storage_policy)
     {
         for (const auto & disk : storage_policy->getDisks())
+        {
+            LOG_DEBUG(getLogger("isStaticStorage"), "Disk: {}, isReadOnly:{}, isWriteOnce:{}",
+                disk->getName(), disk->isReadOnly(), disk->isWriteOnce());
             if (!(disk->isReadOnly() || disk->isWriteOnce()))
                 return false;
+        }
+
         return true;
     }
     return false;

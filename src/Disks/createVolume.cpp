@@ -4,7 +4,7 @@
 #include <Disks/VolumeJBOD.h>
 
 #include <boost/algorithm/string.hpp>
-
+#include <Common/logger_useful.h>
 namespace DB
 {
 
@@ -33,6 +33,7 @@ VolumePtr createVolumeFromConfig(
 )
 {
     String raid_type = config.getString(config_prefix + ".raid_type", "JBOD");
+    LOG_DEBUG(getLogger("createVolumeFromConfig"), "Creating volume {}, raid_type {}", name, raid_type);
     if (raid_type == "JBOD")
     {
         return std::make_shared<VolumeJBOD>(name, config, config_prefix, disk_selector);

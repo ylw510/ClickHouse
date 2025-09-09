@@ -114,6 +114,9 @@ void registerMetadataStorageFromDisk(MetadataStorageFactory & factory)
         auto db_disk
             = std::make_shared<DiskLocal>(name + "-metadata", metadata_path, metadata_keep_free_space_bytes, config, config_prefix);
         auto key_compatibility_prefix = getObjectKeyCompatiblePrefix(*object_storage, config, config_prefix);
+        LOG_DEBUG(getLogger("registerMetadataStorageFromDisk-local"),
+                    "Created local metadata storage with path {}, keep_free_space_bytes {}, key {}, storage_name:{}",
+                    metadata_path, metadata_keep_free_space_bytes, key_compatibility_prefix, name);
         return std::make_shared<MetadataStorageFromDisk>(db_disk, key_compatibility_prefix);
     });
 }
@@ -150,6 +153,9 @@ void registerPlainMetadataStorage(MetadataStorageFactory & factory)
         ObjectStoragePtr object_storage) -> MetadataStoragePtr
     {
         auto key_compatibility_prefix = getObjectKeyCompatiblePrefix(*object_storage, config, config_prefix);
+        LOG_DEBUG(getLogger("registerPlainMetadataStorage-plain"),
+                    "Created plain metadata storage with key {}, storage_name:{}",
+                    key_compatibility_prefix, config_prefix);
         return std::make_shared<MetadataStorageFromPlainObjectStorage>(
             object_storage, key_compatibility_prefix, config.getUInt64(config_prefix + ".object_metadata_cache_size", 0));
     });

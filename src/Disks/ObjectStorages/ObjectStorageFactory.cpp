@@ -194,7 +194,9 @@ void registerS3ObjectStorage(ObjectStorageFactory & factory)
 
         auto object_storage = createObjectStorage<S3ObjectStorage>(
             ObjectStorageType::S3, config, config_prefix, std::move(client), std::move(settings), uri, s3_capabilities, key_generator, name);
-
+        LOG_DEBUG(getLogger("registerS3ObjectStorage"),
+                    "Created S3 object storage with endpoint {}, bucket {}, key {}, storage_name:{}",
+                    endpoint, uri.bucket, uri.key, uri.storage_name);
         return object_storage;
     };
     factory.registerObjectStorageType("s3", creator);

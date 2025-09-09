@@ -72,6 +72,8 @@ bool MetadataStorageFromPlainObjectStorage::existsDirectory(const std::string & 
 {
     auto key_prefix = object_storage->generateObjectKeyForPath(path, std::nullopt /* key_prefix */).serialize();
     auto directory = std::filesystem::path(std::move(key_prefix)) / "";
+    LOG_DEBUG(getLogger("MetadataStorageFromPlainObjectStorage"), "existsDirectory: {}, directory: {}",
+     path, directory);
     return object_storage->existsOrHasAnyChild(directory);
 }
 
@@ -286,6 +288,8 @@ void MetadataStorageFromPlainObjectStorageTransaction::createMetadataFile(
 
 void MetadataStorageFromPlainObjectStorageTransaction::createDirectory(const std::string & path)
 {
+    LOG_TRACE(getLogger("MetadataStorageFromPlainObjectStorageTransaction"), "Create directory: {}.metadata_storage.object_storage->isWriteOnce:{}",
+     path,metadata_storage.object_storage->isWriteOnce());
     if (metadata_storage.object_storage->isWriteOnce())
         return;
 
@@ -336,6 +340,8 @@ UnlinkMetadataFileOperationOutcomePtr MetadataStorageFromPlainObjectStorageTrans
 
 void MetadataStorageFromPlainObjectStorageTransaction::commit(const TransactionCommitOptionsVariant & options)
 {
+    LOG_DEBUG(getLogger("MetadataStorageFromPlainObjectStorageTransaction"), "Committing transaction with {} operations",
+     operations.size());
     MetadataOperationsHolder::commitImpl(options, metadata_storage.metadata_mutex);
 }
 

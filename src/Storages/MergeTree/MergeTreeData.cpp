@@ -401,6 +401,8 @@ void MergeTreeData::initializeDirectoriesAndFormatVersion(const std::string & re
 
     for (const auto & disk : getDisks())
     {
+        LOG_DEBUG(getLogger("initializeDirectoriesAndFormatVersion"),
+        "Check and create directories on disk: {}, path: {}", disk->getName(), relative_data_path);
         if (disk->isBroken())
             continue;
 
@@ -750,7 +752,7 @@ StoragePolicyPtr MergeTreeData::getStoragePolicy() const
     const auto & context = getContext();
 
     StoragePolicyPtr storage_policy;
-
+    //LOG_DEBUG(getLogger("getStoragePolicy"),"getStoragePolicy");
     if ((*settings)[MergeTreeSetting::disk].changed)
         storage_policy = context->getStoragePolicyFromDisk((*settings)[MergeTreeSetting::disk]);
     else
@@ -7718,8 +7720,12 @@ void MergeTreeData::Transaction::addPart(MutableDataPartPtr & part, bool need_re
 
 void MergeTreeData::Transaction::rollback(DataPartsLock * lock)
 {
+    LOG_DEBUG(getLogger("Transaction"), "enter rollback transaction {}, {} parts to rollback",
+            getTID(), precommitted_parts.size());
     if (!isEmpty())
     {
+        LOG_DEBUG(getLogger("Transaction"), "Rolling back transaction {}, {} parts to rollback",
+                  getTID(), precommitted_parts.size());
         for (const auto & part : precommitted_parts)
             part->version.creation_csn.store(Tx::RolledBackCSN);
 
@@ -10001,6 +10007,8 @@ CurrentlySubmergingEmergingTagger::~CurrentlySubmergingEmergingTagger()
 bool MergeTreeData::initializeDiskOnConfigChange(const std::set<String> & new_added_disks)
 {
     auto storage_policy = getStoragePolicy();
+    LOG_DEBUG(getLogger("initializeDiskOnConfigChange"), "storage_policy:{}, table {}",
+    storage_policy->getName(), getStorageID().table_name);
     const auto format_version_path = fs::path(relative_data_path) / MergeTreeData::FORMAT_VERSION_FILE_NAME;
     for (const auto & name : new_added_disks)
     {

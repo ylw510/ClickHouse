@@ -119,6 +119,8 @@ namespace MergeTreeSetting
     extern const MergeTreeSettingsBool use_const_adaptive_granularity;
     extern const MergeTreeSettingsUInt64 max_merge_delayed_streams_for_parallel_write;
     extern const MergeTreeSettingsBool ttl_only_drop_parts;
+    extern const MergeTreeSettingsUInt64 index_granularity_bytes;
+    extern const MergeTreeSettingsUInt64 index_granularity;
 }
 
 namespace ErrorCodes
@@ -670,6 +672,20 @@ bool MergeTask::ExecuteAndFinalizeHorizontalPart::prepare() const
         global_ctx->new_data_part->index_granularity_info,
         ctx->blocks_are_granules_size);
 
+
+    UInt64 index_granularity_bytes = (*merge_tree_settings)[MergeTreeSetting::index_granularity_bytes];
+    UInt64 index_granularity = (*merge_tree_settings)[MergeTreeSetting::index_granularity];
+    LOG_DEBUG(getLogger("MergeTask"), "storage_settings.index_granularity_bytes:{}, storage_settings.index_granularity:{}",
+                                        index_granularity_bytes,
+                                       index_granularity);
+
+    auto storage_settings = global_ctx->new_data_part->storage.getSettings();
+    UInt64 index_granularity_bytes_old = (*storage_settings)[MergeTreeSetting::index_granularity_bytes];
+    UInt64 index_granularity_old = (*storage_settings)[MergeTreeSetting::index_granularity];
+    LOG_DEBUG(getLogger("MergeTask"), "storage_settings.index_granularity_bytes_old:{}, storage_settings.index_granularity_old:{}",
+                                        index_granularity_bytes_old,
+                                       index_granularity_old);
+    LOG_DEBUG(getLogger("merging_columns"), "merging_columns:{}", global_ctx->merging_columns.toNamesAndTypesDescription());
     global_ctx->to = std::make_shared<MergedBlockOutputStream>(
         global_ctx->new_data_part,
         global_ctx->metadata_snapshot,
@@ -1049,6 +1065,9 @@ bool MergeTask::VerticalMergeStage::prepareVerticalMergeForAllColumns() const
     bool all_parts_on_remote_disks = std::ranges::all_of(global_ctx->future_part->parts, [](const auto & part) { return part->isStoredOnRemoteDisk(); });
     ctx->use_prefetch = all_parts_on_remote_disks && storage_settings[MergeTreeSetting::vertical_merge_remote_filesystem_prefetch];
 
+    LOG_DEBUG(getLogger("VerticalMergeStage"), "gathering_columns:{}",
+         global_ctx->gathering_columns.toNamesAndTypesDescription());
+
     if (ctx->use_prefetch && ctx->it_name_and_type != global_ctx->gathering_columns.end())
         ctx->prepared_pipeline = createPipelineForReadingOneColumn(ctx->it_name_and_type->name);
 
@@ -1245,7 +1264,7 @@ void MergeTask::VerticalMergeStage::prepareVerticalMergeForOneColumn() const
     ctx->column_parts_pipeline.disableProfileEventUpdate();
     ctx->executor = std::make_unique<PullingPipelineExecutor>(ctx->column_parts_pipeline);
     NamesAndTypesList columns_list = {*ctx->it_name_and_type};
-
+    LOG_DEBUG(getLogger("VerticalMergeStage"), "Merging column: {}", columns_list.toNamesAndTypesDescription());
     ctx->column_to = std::make_unique<MergedColumnOnlyOutputStream>(
         global_ctx->new_data_part,
         global_ctx->metadata_snapshot,
@@ -1263,6 +1282,7 @@ void MergeTask::VerticalMergeStage::prepareVerticalMergeForOneColumn() const
 
 bool MergeTask::VerticalMergeStage::executeVerticalMergeForOneColumn() const
 {
+    LOG_DEBUG(getLogger("VerticalMergeStage"), "executeVerticalMergeForOneColumn");
     Stopwatch watch(CLOCK_MONOTONIC_COARSE);
     UInt64 step_time_ms = (*global_ctx->data->getSettings())[MergeTreeSetting::background_task_preferred_step_execution_time_ms].totalMilliseconds();
 
@@ -1552,6 +1572,7 @@ void MergeTask::MergeProjectionsStage::cancel() noexcept
 
 bool MergeTask::VerticalMergeStage::executeVerticalMergeForAllColumns() const
 {
+    LOG_DEBUG(getLogger("VerticalMergeStage"), "Starting to executeVerticalMergeForAllColumns for vertical merge");
     /// No need to execute this part if it is horizontal merge.
     if (global_ctx->chosen_merge_algorithm != MergeAlgorithm::Vertical)
         return false;

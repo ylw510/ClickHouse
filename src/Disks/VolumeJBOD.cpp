@@ -4,7 +4,7 @@
 #include <Common/formatReadable.h>
 #include <Common/quoteString.h>
 #include <Common/logger_useful.h>
-
+#include <Common/StackTrace.h>
 namespace DB
 {
 
@@ -97,6 +97,9 @@ DiskPtr VolumeJBOD::getDisk(size_t /* index */) const
     {
         case VolumeLoadBalancing::ROUND_ROBIN:
         {
+            LOG_DEBUG(getLogger("VolumeJBOD"), "VolumeJBOD::getDisk ROUND_ROBIN, last_used: {}, disks size: {}"
+                "stack trace: {}",
+                last_used.load(std::memory_order_relaxed), disks.size(), StackTrace().toString());
             size_t start_from = last_used.fetch_add(1u, std::memory_order_acq_rel);
             size_t index = start_from % disks.size();
             return disks[index];

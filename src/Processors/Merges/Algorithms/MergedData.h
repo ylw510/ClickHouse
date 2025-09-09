@@ -34,6 +34,9 @@ public:
     bool hasEnoughRows() const;
 
     UInt64 mergedRows() const { return merged_rows; }
+    UInt64 maxBlockSizeBytes() const { return max_block_size_bytes; }
+    bool needFlush() const { return need_flush; }
+    UInt64 sumBlocksGranularity() const { return sum_blocks_granularity; }
     UInt64 totalMergedRows() const { return total_merged_rows; }
     UInt64 totalChunks() const { return total_chunks; }
     UInt64 totalAllocatedBytes() const { return total_allocated_bytes; }

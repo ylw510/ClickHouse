@@ -5,7 +5,7 @@
 
 #include <IO/ReadHelpers.h>
 #include <IO/WriteHelpers.h>
-
+#include <Common/logger_useful.h>
 #include <memory>
 #include <shared_mutex>
 
@@ -206,6 +206,7 @@ void MetadataStorageFromDiskTransaction::createDirectory(const std::string & pat
 
 void MetadataStorageFromDiskTransaction::createDirectoryRecursive(const std::string & path)
 {
+    LOG_DEBUG(getLogger("MetadataStorageFromDiskTransaction"), "Create directory recursively: {}", path);
     addOperation(std::make_unique<CreateDirectoryRecursiveOperation>(path, *metadata_storage.getDisk()));
 }
 

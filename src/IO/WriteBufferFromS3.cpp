@@ -188,6 +188,8 @@ void WriteBufferFromS3::preFinalize()
         }
         else
         {
+            LOG_DEBUG(getLogger("WriteBufferFromS3"), "Doing single part upload for {} bytes to {} {}.do_single_part_upload.size:{}",
+                      detached_part_data.front().data_size, bucket, key, detached_part_data.size());
             makeSinglepartUpload(std::move(detached_part_data.front()));
             detached_part_data.pop_front();
         }

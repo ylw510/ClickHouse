@@ -26,7 +26,8 @@
 #include <Core/DistributedCacheProtocol.h>
 #endif
 #include <Core/Settings.h>
-
+#include <Common/logger_useful.h>
+#include <Common/Logger.h>
 
 namespace DB
 {
@@ -374,8 +375,12 @@ void DiskObjectStorage::createDirectories(const String & path)
     /// Super clumsy code which allows to avoid race condition in MetaInKeeper
     if (metadata_storage->isTransactional())
     {
+            LOG_DEBUG(getLogger("DiskObjectStorage"), "Create directories: {}.isTransactional", path);
+
         while (!metadata_storage->existsFileOrDirectory(path))
         {
+            LOG_DEBUG(getLogger("DiskObjectStorage"), "Create directories: {}.!existsFileOrDirectory", path);
+
             auto transaction = createObjectStorageTransaction();
             transaction->createDirectories(path);
             if (isSuccessfulOutcome(transaction->tryCommit(TransactionCommitOptionsVariant{})))
@@ -384,9 +389,11 @@ void DiskObjectStorage::createDirectories(const String & path)
     }
     else
     {
+                    LOG_DEBUG(getLogger("DiskObjectStorage"), "Create directories: {}.!isTransactional", path);
         auto transaction = createObjectStorageTransaction();
         transaction->createDirectories(path);
         transaction->commit();
+        LOG_DEBUG(getLogger("DiskObjectStorage"), "Create directories succ!");
     }
 }
 
@@ -620,6 +627,10 @@ bool DiskObjectStorage::isPlain() const
 
 bool DiskObjectStorage::isWriteOnce() const
 {
+    LOG_DEBUG(getLogger("isWriteOnce"),
+    "DiskObjectStorage::isWriteOnce for disk {}, object_storage->isWriteOnce(): {}"
+    "object_storage name: {}, object_storage type: {}",
+        name, object_storage->isWriteOnce(), object_storage->getName(), object_storage->getType());
     return object_storage->isWriteOnce();
 }
 

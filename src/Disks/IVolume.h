@@ -2,9 +2,9 @@
 
 #include <Disks/IDisk.h>
 #include <Disks/DiskSelector.h>
-
+#include <Common/logger_useful.h>
 #include <Poco/Util/AbstractConfiguration.h>
-
+#include <Common/StackTrace.h>
 namespace DB
 {
 
@@ -55,6 +55,9 @@ public:
         , perform_ttl_move_on_insert(perform_ttl_move_on_insert_)
         , load_balancing(load_balancing_)
     {
+        LOG_DEBUG(getLogger("IVolume"), "Volume {} created, total disks {}, load_balancing {}.stack trace: {}",
+                                        name, disks.size(),load_balancing, StackTrace().toString());
+
     }
 
     IVolume(

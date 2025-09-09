@@ -29,6 +29,9 @@ MergingSortedAlgorithm::MergingSortedAlgorithm(
     , sorting_queue_strategy(sorting_queue_strategy_)
     , cursors(num_inputs)
 {
+    LOG_DEBUG(getLogger("MergingSortedAlgorithm::constructor"),
+         "MergingSortedAlgorithm: max_block_size: {}, max_block_size_bytes: {}, limit: {}, use_average_block_sizes:{}",
+        max_block_size_, max_block_size_bytes_, limit_, use_average_block_sizes);
     DataTypes sort_description_types;
     sort_description_types.reserve(description.size());
 
@@ -95,6 +98,8 @@ void MergingSortedAlgorithm::initialize(Inputs inputs)
 void MergingSortedAlgorithm::consume(Input & input, size_t source_num)
 {
     removeConstAndSparse(input);
+    LOG_DEBUG(getLogger("MergingSortedAlgorithm::consume"), "MergingSortedAlgorithm: consume input from source {}, num rows: {}",
+        source_num, !input.chunk.empty() ? input.chunk.getNumRows() : 0);
     current_inputs[source_num].swap(input);
     cursors[source_num].reset(current_inputs[source_num].chunk.getColumns(), *header, current_inputs[source_num].chunk.getNumRows());
 
@@ -137,11 +142,18 @@ IMergingAlgorithm::Status MergingSortedAlgorithm::merge()
 template <typename TSortingHeap>
 IMergingAlgorithm::Status MergingSortedAlgorithm::mergeImpl(TSortingHeap & queue)
 {
+    LOG_DEBUG(getLogger("MergingSortedAlgorithm"), "queue size: {}", queue.size());
     /// Take rows in required order and put them into `merged_data`, while the rows are no more than `max_block_size`
     while (queue.isValid())
     {
         if (merged_data.hasEnoughRows())
+        {
+            LOG_DEBUG(getLogger("merged_data"), "merged_data has enough rows: {}.max_block_size:{}, max_block_size_bytes:{}"
+                "sum_blocks_granularity:{}.need_flush:{}",
+            merged_data.mergedRows(), merged_data.maxBlockSize(), merged_data.maxBlockSizeBytes(),
+            merged_data.sumBlocksGranularity(), merged_data.needFlush());
             return Status(merged_data.pull());
+        }
 
         auto current = queue.current();
 
@@ -203,7 +215,9 @@ IMergingAlgorithm::Status MergingSortedAlgorithm::mergeImpl(TSortingHeap & queue
         }
 
         merged_data.insertRow(current->all_columns, current->getRow(), current->rows);
-
+        // LOG_DEBUG(getLogger("MergingSortedAlgorithm"), "MergingSortedAlgorithm: inserted row from source {}, total merged rows: {}"
+        //                                         "current->getRow:{}, current->rows:{}",
+        //         current.impl->order, merged_data.mergedRows(), current->getRow(), current->rows);
         if (out_row_sources_buf)
         {
             RowSourcePart row_source(current.impl->order);

@@ -40,6 +40,7 @@ IVolume::IVolume(
     {
         if (startsWith(disk, "disk"))
         {
+            LOG_DEBUG(getLogger("IVolume"), "  Found disk entry: {}", disk);
             auto disk_name = config.getString(config_prefix + "." + disk);
             disks.push_back(disk_selector->get(disk_name));
         }

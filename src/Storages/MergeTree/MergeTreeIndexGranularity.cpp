@@ -4,7 +4,8 @@
 #include <Storages/MergeTree/MergeTreeIndexGranularityInfo.h>
 #include <Storages/MergeTree/MergeTreeSettings.h>
 #include <IO/WriteHelpers.h>
-
+#include <Common/logger_useful.h>
+#include <Common/Logger.h>
 namespace DB
 {
 
@@ -84,7 +85,11 @@ size_t computeIndexGranularity(
     bool can_use_adaptive_index_granularity)
 {
     size_t index_granularity_for_block;
-
+    LOG_DEBUG(getLogger("computeIndexGranularity"),
+        "computeIndexGranularity: rows {}, bytes_uncompressed {}, index_granularity_bytes {}, "
+        "fixed_index_granularity_rows {}, blocks_are_granules {}, can_use_adaptive_index_granularity {}",
+        rows, bytes_uncompressed, index_granularity_bytes, fixed_index_granularity_rows,
+        blocks_are_granules, can_use_adaptive_index_granularity);
     if (!can_use_adaptive_index_granularity)
     {
         index_granularity_for_block = fixed_index_granularity_rows;

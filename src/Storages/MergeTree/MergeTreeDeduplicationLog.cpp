@@ -11,6 +11,8 @@
 #include <Disks/IDisk.h>
 
 #include <Common/Exception.h>
+#include <Common/logger_useful.h>
+#include <Common/Logger.h>
 
 namespace DB
 {
@@ -40,13 +42,53 @@ struct MergeTreeDeduplicationLogRecord
 
 void writeRecord(const MergeTreeDeduplicationLogRecord & record, WriteBuffer & out)
 {
+
+    //         LOG_DEBUG(getLogger("writeIntText"),"test 0.out:{}.",
+    //             &out ? "not null": "null");
+
+    // if (likely(reinterpret_cast<uintptr_t>(out.position()) + 3 < reinterpret_cast<uintptr_t>(out.buffer().end())))
+    // {
+    //         LOG_DEBUG(getLogger("writeIntText"),"test1");
+
+    //     out.position() = itoa(static_cast<uint8_t>(record.operation), out.position());
+    //         LOG_DEBUG(getLogger("writeIntText"),"test2");
+
+    // }
+    // else
+    // {
+    //                 LOG_DEBUG(getLogger("writeIntText"),"test3");
+
+    //     detail::writeUIntTextFallback(static_cast<uint8_t>(record.operation), out);
+
+    //                 LOG_DEBUG(getLogger("writeIntText"),"test4");
+
+    // }
+
+
+
+    LOG_DEBUG(getLogger("writeRecord"),"test 1");
     writeIntText(static_cast<uint8_t>(record.operation), out);
+    LOG_DEBUG(getLogger("writeRecord"),"test2");
+
     writeChar('\t', out);
+    LOG_DEBUG(getLogger("writeRecord"),"test3");
     writeString(record.part_name, out);
+    LOG_DEBUG(getLogger("writeRecord"),"test4");
+
+
     writeChar('\t', out);
+        LOG_DEBUG(getLogger("writeRecord"),"test5");
+
     writeString(record.block_id, out);
+    LOG_DEBUG(getLogger("writeRecord"),"test6");
+
+
     writeChar('\n', out);
+        LOG_DEBUG(getLogger("writeRecord"),"test7");
+
     out.next();
+        LOG_DEBUG(getLogger("writeRecord"),"test8");
+
 }
 
 void readRecord(MergeTreeDeduplicationLogRecord & record, ReadBuffer & in)
@@ -94,13 +136,21 @@ MergeTreeDeduplicationLog::MergeTreeDeduplicationLog(
     , disk(disk_)
 {
     if (deduplication_window != 0 && !disk->existsDirectory(logs_dir))
+    {
+        LOG_DEBUG(getLogger("MergeTreeDeduplicationLog"),"Creating deduplication log directory: {}", logs_dir);
         disk->createDirectories(logs_dir);
+
+    }
 }
 
 void MergeTreeDeduplicationLog::load()
 {
+    LOG_DEBUG(getLogger("MergeTreeDeduplicationLog"),"Loading deduplication log from path: {}", logs_dir);
     if (!disk->existsDirectory(logs_dir))
+    {
+        //rotateAndDropIfNeeded();
         return;
+    }
 
     for (auto it = disk->iterateDirectory(logs_dir); it->isValid(); it->next())
     {
@@ -116,6 +166,8 @@ void MergeTreeDeduplicationLog::load()
 
     if (deduplication_window != 0)
     {
+        LOG_DEBUG(getLogger("loadLOG"), "current_writer:{}, deduplication_window:{}",
+         current_writer ? "not null": "null", deduplication_window);
         /// Order important, we load history from the begging to the end
         for (auto & [log_number, desc] : existing_logs)
         {
@@ -133,8 +185,11 @@ void MergeTreeDeduplicationLog::load()
         rotateAndDropIfNeeded();
 
         /// Can happen in case we have unfinished log
+            LOG_DEBUG(getLogger("loadLOG"), "current_writer:{}", current_writer ? "not null": "null");
+
         if (!current_writer)
             current_writer = disk->writeFile(existing_logs.rbegin()->second.path, DBMS_DEFAULT_BUFFER_SIZE, WriteMode::Append);
+        LOG_DEBUG(getLogger("loadLOG"), "current_writer:{}", current_writer ? "not null": "null");
     }
 }
 
@@ -217,6 +272,8 @@ void MergeTreeDeduplicationLog::rotateAndDropIfNeeded()
     {
         rotate();
         dropOutdatedLogs();
+        LOG_DEBUG(getLogger("dropOutdatedLogs"),"After rotate and drop, current_log_number:{}, existing_logs size:{}",
+         current_log_number, existing_logs.size());
     }
 }
 
@@ -242,9 +299,13 @@ std::pair<MergeTreePartInfo, bool> MergeTreeDeduplicationLog::addPart(const std:
     {
         throw Exception(ErrorCodes::ABORTED, "Storage has been shutdown when we add this part.");
     }
-
-    chassert(current_writer != nullptr);
-
+    LOG_DEBUG(getLogger("MergeTreeDeduplicationLog"),"current_writer:{}", current_writer ? "not null": "null");
+    if (current_writer == nullptr)
+    {
+        throw Exception(ErrorCodes::ABORTED, "Current writer is null when we add this part.");
+    }
+    //chassert(current_writer != nullptr);
+    LOG_DEBUG(getLogger("MergeTreeDeduplicationLog"),"current_writer:{}", current_writer ? "not null": "null");
     /// Create new record
     MergeTreeDeduplicationLogRecord record;
     record.operation = MergeTreeDeduplicationOp::ADD;
@@ -314,6 +375,7 @@ void MergeTreeDeduplicationLog::dropPart(const MergeTreePartInfo & drop_part_inf
 
 void MergeTreeDeduplicationLog::setDeduplicationWindowSize(size_t deduplication_window_)
 {
+    LOG_DEBUG(getLogger("MergeTreeDeduplicationLog"),"Setting deduplication window size to {}", deduplication_window_);
     std::lock_guard lock(state_mutex);
 
     deduplication_window = deduplication_window_;
@@ -329,6 +391,8 @@ void MergeTreeDeduplicationLog::setDeduplicationWindowSize(size_t deduplication_
     /// Can happen in case we have unfinished log
     if (!current_writer)
         current_writer = disk->writeFile(existing_logs.rbegin()->second.path, DBMS_DEFAULT_BUFFER_SIZE, WriteMode::Append);
+    LOG_DEBUG(getLogger("MergeTreeDeduplicationLog"),"Setting deduplication window size to {} done.current_writer:{}",
+     deduplication_window_, current_writer ? "not null": "null");
 }
 
 

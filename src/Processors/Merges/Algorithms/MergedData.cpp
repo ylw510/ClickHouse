@@ -1,7 +1,8 @@
 #include <Columns/IColumn.h>
 #include <Core/Block.h>
 #include <Processors/Merges/Algorithms/MergedData.h>
-
+#include <Common/logger_useful.h>
+#include <Common/Logger.h>
 namespace DB
 {
 
@@ -128,6 +129,9 @@ Chunk MergedData::pull()
 
 bool MergedData::hasEnoughRows() const
 {
+    LOG_DEBUG(getLogger("hasEnoughRows"), "merged_data has rows: {}. max_block_size:{}, max_block_size_bytes:{}"
+        "sum_blocks_granularity:{}.need_flush:{}, use_average_block_size:{}",
+        merged_rows, max_block_size, max_block_size_bytes, sum_blocks_granularity, need_flush, use_average_block_size);
     /// If full chunk was or is going to be inserted, then we must pull it.
     /// It is needed for fast-forward optimization.
     if (need_flush)
@@ -145,7 +149,11 @@ bool MergedData::hasEnoughRows() const
         {
             merged_bytes += column->byteSize();
             if (merged_bytes >= max_block_size_bytes)
+            {
+                LOG_DEBUG(getLogger("merged_data"), "arrive byte threldhold.merged_data has enough bytes: {}. max_block_size_bytes:{}",
+                merged_bytes, max_block_size_bytes);
                 return true;
+            }
         }
     }
 

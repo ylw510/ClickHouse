@@ -5420,6 +5420,7 @@ DiskSelectorPtr Context::getDiskSelector(std::lock_guard<std::mutex> & /* lock *
 {
     if (!shared->merge_tree_disk_selector)
     {
+        LOG_DEBUG(getLogger("Context"), "Initializing DiskSelector from configuration");
         constexpr auto config_name = "storage_configuration.disks";
         const auto & config = getConfigRef();
         auto disk_selector = std::make_shared<DiskSelector>();

@@ -68,6 +68,7 @@ void MetadataStorageFromPlainObjectStorageCreateDirectoryOperation::execute(std:
 {
     /// parent_path() removes the trailing '/'
     const auto base_path = path.parent_path();
+    LOG_DEBUG(getLogger("MetadataStorageFromPlainObjectStorageCreateDirectoryOperation"), "Creating directory: {} with base path: {}", path, base_path);
     if (path_map.existsLocalPath(base_path))
         return;
 

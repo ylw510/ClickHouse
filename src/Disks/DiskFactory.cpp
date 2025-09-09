@@ -1,5 +1,5 @@
 #include <Disks/DiskFactory.h>
-
+#include <Common/logger_useful.h>
 namespace DB
 {
 namespace ErrorCodes
@@ -43,7 +43,7 @@ DiskPtr DiskFactory::create(
     {
         return nullptr;
     }
-
+    LOG_DEBUG(getLogger("DiskFactory"), "Creating disk {}, type {}", name, disk_type);
     const auto & disk_creator = found->second;
     return disk_creator(name, config, config_prefix, context, map, attach, custom_disk);
 }
