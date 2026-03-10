@@ -300,3 +300,19 @@ else()
         )
     endforeach()
 endif ()
+
+# Build summary: record start time and print completion info.
+# ClickHouse supports Linux, macOS, FreeBSD, SunOS - all use sh and date.
+set(BUILD_START_FILE "${CMAKE_BINARY_DIR}/.build_start_epoch")
+add_custom_target(record-build-start ALL
+    COMMAND sh -c "date +%s > '${BUILD_START_FILE}' 2>/dev/null || true"
+    COMMENT "" VERBATIM
+)
+add_custom_target(build-summary ALL
+    COMMAND ${CMAKE_COMMAND}
+        -DCLICKHOUSE_BUILD_DIR=${CMAKE_BINARY_DIR}
+        -DCLICKHOUSE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+        -P ${ClickHouse_SOURCE_DIR}/cmake/build_summary.cmake
+    DEPENDS clickhouse-bundle clickhouse record-build-start
+    COMMENT "Build completed successfully" VERBATIM
+)
