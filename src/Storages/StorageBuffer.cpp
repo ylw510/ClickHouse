@@ -33,6 +33,7 @@
 #include <DataTypes/DataTypeLowCardinality.h>
 #include <DataTypes/DataTypeString.h>
 #include <Storages/AlterCommands.h>
+#include <Storages/ColumnsDescription.h>
 #include <Storages/StorageFactory.h>
 #include <Storages/StorageValues.h>
 #include <Storages/ReadInOrderOptimizer.h>
@@ -65,7 +66,6 @@ namespace ProfileEvents
     extern const Event StorageBufferPassedTimeFlushThreshold;
     extern const Event StorageBufferPassedRowsFlushThreshold;
     extern const Event StorageBufferPassedBytesFlushThreshold;
-    extern const Event StorageBufferLayerLockReadersWaitMilliseconds;
     extern const Event StorageBufferLayerLockWritersWaitMilliseconds;
 }
 
@@ -99,33 +99,27 @@ namespace ErrorCodes
     extern const int ALTER_OF_COLUMN_IS_FORBIDDEN;
 }
 
-std::unique_lock<std::mutex> StorageBuffer::Buffer::lockForReading() const
+void StorageBuffer::Buffer::publishSnapshot()
 {
-    return lockImpl(/* read= */true);
+    snapshot.set(std::make_unique<const BufferSnapshot>(BufferSnapshot{
+        .data = mutable_data.cloneWithColumns(mutable_data.getColumns()),
+        .first_write_time = first_write_time,
+        .metadata_version = metadata_version,
+    }));
 }
+
 std::unique_lock<std::mutex> StorageBuffer::Buffer::lockForWriting() const
 {
-    return lockImpl(/* read= */false);
+    Stopwatch watch(CLOCK_MONOTONIC_COARSE);
+    std::unique_lock lock(write_mutex);
+    UInt64 elapsed = watch.elapsedMilliseconds();
+    ProfileEvents::increment(ProfileEvents::StorageBufferLayerLockWritersWaitMilliseconds, elapsed);
+    return lock;
 }
+
 std::unique_lock<std::mutex> StorageBuffer::Buffer::tryLock() const
 {
-    std::unique_lock lock(mutex, std::try_to_lock);
-    return lock;
-}
-std::unique_lock<std::mutex> StorageBuffer::Buffer::lockImpl(bool read) const
-{
-    std::unique_lock lock(mutex, std::defer_lock);
-
-    Stopwatch watch(CLOCK_MONOTONIC_COARSE);
-    lock.lock();
-    UInt64 elapsed = watch.elapsedMilliseconds();
-
-    if (read)
-        ProfileEvents::increment(ProfileEvents::StorageBufferLayerLockReadersWaitMilliseconds, elapsed);
-    else
-        ProfileEvents::increment(ProfileEvents::StorageBufferLayerLockWritersWaitMilliseconds, elapsed);
-
-    return lock;
+    return std::unique_lock(write_mutex, std::try_to_lock);
 }
 
 
@@ -193,6 +187,9 @@ StorageBuffer::StorageBuffer(
     }
     flush_handle = bg_pool.createTask(getStorageID(), log->name() + "/Bg", [this]{ backgroundFlush(); });
 
+    for (auto & buf : buffers)
+        buf.publishSnapshot();
+
     LOG_TRACE(log, "Buffer(flush: ({}), min: ({}), max: ({}))", flush_thresholds.toString(), min_thresholds.toString(), max_thresholds.toString());
 }
 
@@ -203,7 +200,7 @@ VirtualColumnsDescription StorageBuffer::createVirtuals()
     return desc;
 }
 
-/// Reads from one buffer (from one block) under its mutex.
+/// Reads from one buffer via immutable snapshot (no buffer mutex).
 class BufferSource : public ISource
 {
     ColumnPtr fillVirtualColumn(const String & name, const DataTypePtr & type, size_t num_rows) const
@@ -222,6 +219,7 @@ public:
         const StorageID & storage_id_)
         : ISource(std::make_shared<const Block>(storage_snapshot->getSampleBlockForColumns(column_names_)))
         , buffer(buffer_)
+        , metadata(storage_snapshot->metadata)
         , storage_id(storage_id_)
         , metadata(storage_snapshot->metadata)
         , metadata_version(storage_snapshot->metadata->metadata_version) {}
@@ -237,10 +235,11 @@ protected:
             return res;
         has_been_read = true;
 
-        std::unique_lock lock(buffer.lockForReading());
-
-        if (!buffer.data.rows() || buffer.metadata_version != metadata_version)
+        auto ver = buffer.snapshot.get();
+        if (!ver || !ver->rows() || ver->metadata_version != metadata_version)
             return res;
+
+        const Block & data = ver->data;
 
         Columns columns;
         columns.reserve(getPort().getHeader().columns());
@@ -249,19 +248,33 @@ protected:
             const auto & [name, type] = packed;
 
             if (metadata->isVirtualColumn(name))
+<<<<<<< HEAD
                 columns.push_back(fillVirtualColumn(name, type, buffer.data.rows()));
             else if (auto physical_column = tryGetColumnFromBlock(buffer.data, metadata->columns.getColumnOrSubcolumn(GetColumnsOptions::All, name)))
                 columns.push_back(std::move(physical_column));
             else
                 throw Exception(ErrorCodes::LOGICAL_ERROR, "Column or subcolumn '{}' not found in Buffer table", name);
+=======
+                columns.emplace_back(fillVirtualColumn(name, type, data.rows()));
+            else if (auto requested = metadata->columns.tryGetColumnOrSubcolumn(GetColumnsOptions::All, name))
+            {
+                if (ColumnPtr col = tryGetColumnFromBlock(data, *requested))
+                    columns.emplace_back(std::move(col));
+                else
+                    throw Exception(ErrorCodes::LOGICAL_ERROR, "Column '{}' not found in buffer block", name);
+            }
+            else
+                throw Exception(ErrorCodes::LOGICAL_ERROR, "Unknown column: '{}'", name);
+>>>>>>> 2a8aa55a653 (StorageBuffer: MultiVersion snapshots for concurrent reads)
         }
 
-        res.setColumns(std::move(columns), buffer.data.rows());
+        res.setColumns(std::move(columns), data.rows());
         return res;
     }
 
 private:
     StorageBuffer::Buffer & buffer;
+    StorageMetadataPtr metadata;
     StorageID storage_id;
     StorageMetadataPtr metadata;
     int32_t metadata_version;
@@ -767,7 +780,7 @@ public:
 
             if (lock.owns_lock())
             {
-                size_t num_rows = storage.buffers[shard_num].data.rows();
+                size_t num_rows = storage.buffers[shard_num].mutable_data.rows();
                 if (!least_busy_buffer || num_rows < least_busy_shard_rows)
                 {
                     least_busy_buffer = &storage.buffers[shard_num];
@@ -817,13 +830,14 @@ private:
         if (!buffer.first_write_time)
             buffer.first_write_time = current_time;
 
-        size_t old_rows = buffer.data.rows();
-        size_t old_bytes = buffer.data.allocatedBytes();
+        size_t old_rows = buffer.mutable_data.rows();
+        size_t old_bytes = buffer.mutable_data.allocatedBytes();
 
-        appendBlock(storage.log, sorted_block, buffer.data);
+        appendBlock(storage.log, sorted_block, buffer.mutable_data);
+        buffer.publishSnapshot();
 
-        storage.total_writes.rows += (buffer.data.rows() - old_rows);
-        storage.total_writes.bytes += (buffer.data.allocatedBytes() - old_bytes);
+        storage.total_writes.rows += (buffer.mutable_data.rows() - old_rows);
+        storage.total_writes.bytes += (buffer.mutable_data.allocatedBytes() - old_bytes);
     }
 };
 
@@ -913,8 +927,8 @@ bool StorageBuffer::checkThresholds(const Buffer & buffer, bool direct, time_t c
     if (buffer.first_write_time)
         time_passed = current_time - buffer.first_write_time;
 
-    size_t rows = buffer.data.rows() + additional_rows;
-    size_t bytes = buffer.data.bytes() + additional_bytes;
+    size_t rows = buffer.mutable_data.rows() + additional_rows;
+    size_t bytes = buffer.mutable_data.bytes() + additional_bytes;
 
     return checkThresholdsImpl(direct, rows, bytes, time_passed);
 }
@@ -1001,33 +1015,35 @@ bool StorageBuffer::flushBuffer(Buffer & buffer, bool check_thresholds, bool loc
     Block block_to_write;
     time_t current_time = time(nullptr);
 
-    std::optional<std::unique_lock<std::mutex>> lock;
+    std::optional<std::unique_lock<std::mutex>> owned_lock;
     if (!locked)
-        lock.emplace(buffer.lockForReading());
+        owned_lock.emplace(buffer.lockForWriting());
 
     time_t time_passed = 0;
-    size_t rows = buffer.data.rows();
-    size_t bytes = buffer.data.bytes();
+    size_t rows = buffer.mutable_data.rows();
+    size_t bytes = buffer.mutable_data.bytes();
     if (buffer.first_write_time)
         time_passed = current_time - buffer.first_write_time;
 
     if (check_thresholds)
     {
-        if (!checkThresholdsImpl(/* direct= */false, rows, bytes, time_passed))
+        if (!checkThresholdsImpl(/* direct= */ false, rows, bytes, time_passed))
             return false;
     }
 
-    buffer.data.swap(block_to_write);
+    buffer.mutable_data.swap(block_to_write);
     buffer.first_write_time = 0;
 
     size_t block_rows = block_to_write.rows();
     size_t block_bytes = block_to_write.bytes();
-    size_t block_allocated_bytes_delta = block_to_write.allocatedBytes() - buffer.data.allocatedBytes();
+    size_t block_allocated_bytes_delta = block_to_write.allocatedBytes() - buffer.mutable_data.allocatedBytes();
 
     CurrentMetrics::sub(CurrentMetrics::StorageBufferRows, block_rows);
     CurrentMetrics::sub(CurrentMetrics::StorageBufferBytes, block_bytes);
 
     ProfileEvents::increment(ProfileEvents::StorageBufferFlush);
+
+    buffer.publishSnapshot();
 
     if (!destination_id)
     {
@@ -1038,12 +1054,9 @@ bool StorageBuffer::flushBuffer(Buffer & buffer, bool check_thresholds, bool loc
         return true;
     }
 
-    /** For simplicity, buffer is locked during write.
-        * We could unlock buffer temporary, but it would lead to too many difficulties:
-        * - data, that is written, will not be visible for SELECTs;
-        * - new data could be appended to buffer, and in case of exception, we must merge it with old data, that has not been written;
-        * - this could lead to infinite memory growth.
-        */
+    /// Reads already observe empty buffer via snapshot; optional unlock before sync write to destination.
+    if (!locked)
+        owned_lock.reset();
 
     Stopwatch watch;
     try
@@ -1054,17 +1067,30 @@ bool StorageBuffer::flushBuffer(Buffer & buffer, bool check_thresholds, bool loc
     {
         ProfileEvents::increment(ProfileEvents::StorageBufferErrorOnFlush);
 
-        /// Return the block to its place in the buffer.
-
         CurrentMetrics::add(CurrentMetrics::StorageBufferRows, block_to_write.rows());
         CurrentMetrics::add(CurrentMetrics::StorageBufferBytes, block_to_write.bytes());
 
-        buffer.data.swap(block_to_write);
+        auto merge_rollback = [&]
+        {
+            if (buffer.mutable_data.empty())
+                buffer.mutable_data = std::move(block_to_write);
+            else
+                appendBlock(log, block_to_write, buffer.mutable_data);
 
-        if (!buffer.first_write_time)
-            buffer.first_write_time = current_time;
+            buffer.publishSnapshot();
 
-        /// After a while, the next write attempt will happen.
+            if (!buffer.first_write_time)
+                buffer.first_write_time = current_time;
+        };
+
+        if (!locked)
+        {
+            std::unique_lock rollback_lock(buffer.lockForWriting());
+            merge_rollback();
+        }
+        else
+            merge_rollback();
+
         throw;
     }
 
@@ -1174,25 +1200,13 @@ void StorageBuffer::reschedule(size_t min_delay)
 
     for (auto & buffer : buffers)
     {
-        /// try_to_lock here to avoid waiting for other layers flushing to be finished,
-        /// since the buffer table may:
-        /// - push to Distributed table, that may take too much time,
-        /// - push to table with materialized views attached,
-        ///   this is also may take some time.
-        ///
-        /// try_to_lock is also ok for background flush, since if there is
-        /// INSERT contended, then the reschedule will be done after
-        /// INSERT will be done.
-        std::unique_lock lock(buffer.tryLock());
-        if (lock.owns_lock())
-        {
-            ++processed_buffers;
-            if (!buffer.data.empty())
-            {
-                min_first_write_time = std::min(min_first_write_time, buffer.first_write_time);
-                rows += buffer.data.rows();
-            }
-        }
+        auto ver = buffer.snapshot.get();
+        if (!ver || ver->data.empty())
+            continue;
+
+        ++processed_buffers;
+        min_first_write_time = std::min(min_first_write_time, ver->first_write_time);
+        rows += ver->rows();
     }
 
     /// will be rescheduled via INSERT

@@ -7,7 +7,11 @@
 
 #include <Poco/Event.h>
 
+#include <Common/MultiVersion.h>
+#include <Core/Block.h>
+
 #include <atomic>
+#include <memory>
 #include <mutex>
 
 
@@ -136,10 +140,23 @@ public:
 
 
 private:
+    struct BufferSnapshot
+    {
+        Block data;
+        time_t first_write_time = 0;
+        int32_t metadata_version = 0;
+
+        size_t rows() const { return data.rows(); }
+        size_t bytes() const { return data.bytes(); }
+        size_t allocatedBytes() const { return data.allocatedBytes(); }
+    };
+
     struct Buffer
     {
+        MultiVersion<BufferSnapshot> snapshot;
+
+        Block mutable_data;
         time_t first_write_time = 0;
-        Block data;
 
         /// Schema version, checked to avoid mixing blocks with different sets of columns, from
         /// before and after an ALTER. There are some remaining mild problems if an ALTER happens
@@ -153,14 +170,13 @@ private:
         ///    usually don't produce lots of small blocks.
         int32_t metadata_version = 0;
 
-        std::unique_lock<std::mutex> lockForReading() const;
+        mutable std::mutex write_mutex;
+
+        /// Shallow snapshot (column Ptr sharing); writers mutate via IColumn::mutate COW when shared.
+        void publishSnapshot();
+
         std::unique_lock<std::mutex> lockForWriting() const;
         std::unique_lock<std::mutex> tryLock() const;
-
-    private:
-        mutable std::mutex mutex;
-
-        std::unique_lock<std::mutex> lockImpl(bool read) const;
     };
 
     /// There are `num_shards` of independent buffers.
