@@ -15,7 +15,7 @@ JSONRowOutputFormat::JSONRowOutputFormat(
     SharedHeader header,
     const FormatSettings & settings_,
     bool yield_strings_)
-    : RowOutputFormatWithExceptionHandlerAdaptor<RowOutputFormatWithUTF8ValidationAdaptor, bool>(header, out_, settings_.json.valid_output_on_exception, true), settings(settings_), yield_strings(yield_strings_)
+    : RowOutputFormatWithExceptionHandlerAdaptor<RowOutputFormatWithUTF8ValidationAdaptor, SharedHeader, bool>(header, out_, settings_.json.valid_output_on_exception, SharedHeader{}, true), settings(settings_), yield_strings(yield_strings_)
 {
     names = JSONUtils::makeNamesValidJSONStrings(header->getNames(), settings, true);
     ostr = RowOutputFormatWithExceptionHandlerAdaptor::getWriteBufferPtr();
@@ -23,6 +23,37 @@ JSONRowOutputFormat::JSONRowOutputFormat(
     settings.json.pretty_print_indent_multiplier = 1;
 }
 
+JSONRowOutputFormat::JSONRowOutputFormat(
+    WriteBuffer & out_,
+    SharedHeader header,
+    SharedHeader aggregates_header,
+    const FormatSettings & settings_,
+    bool yield_strings_)
+    : RowOutputFormatWithExceptionHandlerAdaptor<RowOutputFormatWithUTF8ValidationAdaptor, SharedHeader, bool>(header, out_, settings_.json.valid_output_on_exception, aggregates_header, true)
+    , has_aggregates(true)
+    , settings(settings_)
+    , yield_strings(yield_strings_)
+{
+    names = JSONUtils::makeNamesValidJSONStrings(header->getNames(), settings, true);
+    aggregates_names = JSONUtils::makeNamesValidJSONStrings(aggregates_header->getNames(), settings, true);
+    ostr = RowOutputFormatWithExceptionHandlerAdaptor::getWriteBufferPtr();
+    settings.json.pretty_print_indent = '\t';
+    settings.json.pretty_print_indent_multiplier = 1;
+}
+
+
+void JSONRowOutputFormat::appendAggregates(const Block & aggregates)
+{
+    if (!has_aggregates)
+    {
+        has_aggregates = true;
+        aggregates_names = JSONUtils::makeNamesValidJSONStrings(aggregates.getNames(), settings, true);
+        aggregates_types = aggregates.getDataTypes();
+        aggregates_serializations = aggregates.getSerializations();
+    }
+
+    IOutputFormat::appendAggregates(aggregates);
+}
 
 void JSONRowOutputFormat::writePrefix()
 {
@@ -114,6 +145,29 @@ void JSONRowOutputFormat::writeAfterExtremes()
     JSONUtils::writeObjectEnd(*ostr, 1);
 }
 
+void JSONRowOutputFormat::writeBeforeAggregates()
+{
+    if (!aggregates_started)
+    {
+        JSONUtils::writeFieldDelimiter(*ostr, 2);
+        JSONUtils::writeArrayStart(*ostr, 1, "aggregates");
+        aggregates_started = true;
+    }
+}
+
+void JSONRowOutputFormat::writeAggregates(const Columns & columns, size_t row_num)
+{
+    JSONUtils::writeObjectStart(*ostr, 2);
+    JSONUtils::writeColumns(columns, aggregates_names, aggregates_serializations, row_num, yield_strings, settings, *ostr, 3);
+    JSONUtils::writeObjectEnd(*ostr, 2);
+}
+
+void JSONRowOutputFormat::writeAfterAggregates()
+{
+    if (aggregates_started)
+        JSONUtils::writeArrayEnd(*ostr, 1);
+}
+
 void JSONRowOutputFormat::finalizeImpl()
 {
     JSONUtils::writeAdditionalInfo(
@@ -143,6 +197,7 @@ void JSONRowOutputFormat::resetFormatterImpl()
     RowOutputFormatWithExceptionHandlerAdaptor::resetFormatterImpl();
     ostr = RowOutputFormatWithExceptionHandlerAdaptor::getWriteBufferPtr();
     row_count = 0;
+    aggregates_started = false;
     statistics = Statistics();
 }
 

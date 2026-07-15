@@ -101,6 +101,11 @@ public:
     bool limit_with_ties = false;
     bool limit_by_all = false;
 
+    ASTPtr with_aggregates;
+
+    ASTPtr & refWithAggregates() { return with_aggregates; }
+    ASTPtr withAggregates() const { return with_aggregates; }
+
     ASTPtr & refSelect()    { return getExpression(Expression::SELECT); }
     ASTPtr & refTables()    { return getExpression(Expression::TABLES); }
     ASTPtr & refAliases()   { return getExpression(Expression::ALIASES); }

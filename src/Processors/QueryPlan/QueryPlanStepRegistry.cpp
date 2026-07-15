@@ -54,6 +54,7 @@ void registerNegativeLimitByStep(QueryPlanStepRegistry & registry);
 void registerNegativeOffsetStep(QueryPlanStepRegistry & registry);
 void registerFilterStep(QueryPlanStepRegistry & registry);
 void registerTotalsHavingStep(QueryPlanStepRegistry & registry);
+void registerHitAndAggregateStep(QueryPlanStepRegistry & registry);
 void registerExtremesStep(QueryPlanStepRegistry & registry);
 void registerJoinStep(QueryPlanStepRegistry & registry);
 void registerShuffleSendStep(QueryPlanStepRegistry & registry);
@@ -94,6 +95,7 @@ void QueryPlanStepRegistry::registerPlanSteps()
     registerNegativeOffsetStep(registry);
     registerFilterStep(registry);
     registerTotalsHavingStep(registry);
+    registerHitAndAggregateStep(registry);
     registerExtremesStep(registry);
     registerJoinStep(registry);
 

@@ -246,6 +246,7 @@ private:
     void onLogData(Block & block);
     void onTotals(Block & block, ASTPtr parsed_query);
     void onExtremes(Block & block, ASTPtr parsed_query);
+    void onAggregates(Block & block, ASTPtr parsed_query);
     void onReceiveExceptionFromServer(std::unique_ptr<Exception> && e);
     void onProfileInfo(const ProfileInfo & profile_info);
     void onEndOfStream();

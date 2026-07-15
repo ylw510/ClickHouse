@@ -18,6 +18,18 @@ public:
     OutputFormatWithUTF8ValidationAdaptorBase(SharedHeader header, WriteBuffer & out_, bool validate_utf8)
         : Base(header, out_)
     {
+        initUTF8Validation(validate_utf8);
+    }
+
+    OutputFormatWithUTF8ValidationAdaptorBase(SharedHeader header, WriteBuffer & out_, SharedHeader aggregates_header, bool validate_utf8)
+        : Base(header, out_, aggregates_header)
+    {
+        initUTF8Validation(validate_utf8);
+    }
+
+private:
+    void initUTF8Validation(bool validate_utf8)
+    {
         bool values_can_contain_invalid_utf8 = false;
         for (const auto & type : this->getPort(IOutputFormat::PortKind::Main).getHeader().getDataTypes())
         {
@@ -29,6 +41,7 @@ public:
             validating_ostr = std::make_unique<WriteBufferValidUTF8>(*Base::getWriteBufferPtr());
     }
 
+public:
     void flushImpl() override
     {
         if (validating_ostr)

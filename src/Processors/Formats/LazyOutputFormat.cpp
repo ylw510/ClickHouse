@@ -10,7 +10,14 @@ namespace DB
 NullWriteBuffer LazyOutputFormat::out;
 
 LazyOutputFormat::LazyOutputFormat(SharedHeader header)
-    : IOutputFormat(header, out), queue(2)
+    : IOutputFormat(header, out)
+    , queue(2)
+{
+}
+
+LazyOutputFormat::LazyOutputFormat(SharedHeader header, SharedHeader aggregates_header)
+    : IOutputFormat(header, out, aggregates_header)
+    , queue(2)
 {
 }
 
@@ -45,6 +52,11 @@ Chunk LazyOutputFormat::getTotals()
 Chunk LazyOutputFormat::getExtremes()
 {
     return std::move(extremes);
+}
+
+Chunks LazyOutputFormat::getAggregates()
+{
+    return std::move(aggregates);
 }
 
 void LazyOutputFormat::setRowsBeforeLimit(size_t rows_before_limit)

@@ -24,6 +24,7 @@
 #include <QueryPipeline/BlockIO.h>
 #include <Processors/Transforms/getSourceFromASTInsertQuery.h>
 #include <Processors/Formats/Impl/NullFormat.h>
+#include <Processors/Formats/Impl/JSONRowOutputFormat.h>
 
 #include <Parsers/ASTBackupQuery.h>
 #include <Parsers/ASTIdentifier.h>
@@ -2630,12 +2631,26 @@ void executeQuery(
             if (ast_query_with_output && ast_query_with_output->out_file)
                 throw Exception(ErrorCodes::INTO_OUTFILE_NOT_ALLOWED, "INTO OUTFILE is not allowed");
 
-            output_format = FormatFactory::instance().getOutputFormatParallelIfPossible(
-                format_name,
-                *out_buf,
-                materializeBlock(pipeline.getHeader()),
-                context,
-                output_format_settings);
+            if (pipeline.hasAggregates() && (boost::iequals(format_name, "JSON") || boost::iequals(format_name, "JSONStrings")))
+            {
+                bool yield_strings = boost::iequals(format_name, "JSONStrings");
+                const auto & format_settings = output_format_settings ? *output_format_settings : getFormatSettings(context);
+                output_format = std::make_shared<JSONRowOutputFormat>(
+                    *out_buf,
+                    pipeline.getSharedHeader(),
+                    pipeline.getAggregatesSharedHeader(),
+                    format_settings,
+                    yield_strings);
+            }
+            else
+            {
+                output_format = FormatFactory::instance().getOutputFormatParallelIfPossible(
+                    format_name,
+                    *out_buf,
+                    materializeBlock(pipeline.getHeader()),
+                    context,
+                    output_format_settings);
+            }
 
             output_format->setAutoFlush();
 

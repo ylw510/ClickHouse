@@ -572,6 +572,33 @@ bool LocalConnection::poll(size_t)
         }
     }
 
+    if (state->is_finished && !state->sent_aggregates)
+    {
+        state->sent_aggregates = true;
+
+        if (state->executor)
+        {
+            auto aggregates_blocks = state->executor->getAggregatesBlocks();
+            if (!aggregates_blocks.empty())
+            {
+                next_packet_type = Protocol::Server::Aggregates;
+                state->block.emplace(std::move(aggregates_blocks.front()));
+                state->pending_aggregates_blocks.assign(
+                    std::make_move_iterator(aggregates_blocks.begin() + 1),
+                    std::make_move_iterator(aggregates_blocks.end()));
+                return true;
+            }
+        }
+    }
+
+    if (!state->pending_aggregates_blocks.empty())
+    {
+        next_packet_type = Protocol::Server::Aggregates;
+        state->block.emplace(std::move(state->pending_aggregates_blocks.front()));
+        state->pending_aggregates_blocks.erase(state->pending_aggregates_blocks.begin());
+        return true;
+    }
+
     if (state->is_finished && !state->sent_profile_info)
     {
         state->sent_profile_info = true;
@@ -723,6 +750,7 @@ Packet LocalConnection::receivePacket()
     {
         case Protocol::Server::Totals:
         case Protocol::Server::Extremes:
+        case Protocol::Server::Aggregates:
         case Protocol::Server::Log:
         case Protocol::Server::Data:
         case Protocol::Server::ProfileEvents:

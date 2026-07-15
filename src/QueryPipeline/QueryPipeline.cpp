@@ -93,7 +93,8 @@ static void checkPulling(
     Processors & processors,
     OutputPort * output,
     OutputPort * totals,
-    OutputPort * extremes)
+    OutputPort * extremes,
+    OutputPort * aggregates)
 {
     if (!output || output->isConnected())
         throw Exception(
@@ -110,9 +111,15 @@ static void checkPulling(
             ErrorCodes::LOGICAL_ERROR,
             "Cannot create pulling QueryPipeline because its extremes port is connected");
 
+    if (aggregates && aggregates->isConnected())
+        throw Exception(
+            ErrorCodes::LOGICAL_ERROR,
+            "Cannot create pulling QueryPipeline because its aggregates port is connected");
+
     bool found_output = false;
     bool found_totals = false;
     bool found_extremes = false;
+    bool found_aggregates = false;
     for (const auto & processor : processors)
     {
         for (const auto & in : processor->getInputs())
@@ -126,6 +133,8 @@ static void checkPulling(
                 found_totals = true;
             else if (extremes && &out == extremes)
                 found_extremes = true;
+            else if (aggregates && &out == aggregates)
+                found_aggregates = true;
             else
                 checkOutput(out, processor, processors);
         }
@@ -143,6 +152,10 @@ static void checkPulling(
         throw Exception(
             ErrorCodes::LOGICAL_ERROR,
             "Cannot create pulling QueryPipeline because its extremes port does not belong to any processor");
+    if (aggregates && !found_aggregates)
+        throw Exception(
+            ErrorCodes::LOGICAL_ERROR,
+            "Cannot create pulling QueryPipeline because its aggregates port does not belong to any processor");
 }
 
 static void checkCompleted(Processors & processors)
@@ -396,14 +409,16 @@ QueryPipeline::QueryPipeline(
     std::shared_ptr<Processors> processors_,
     OutputPort * output_,
     OutputPort * totals_,
-    OutputPort * extremes_)
+    OutputPort * extremes_,
+    OutputPort * aggregates_)
     : resources(std::move(resources_))
     , processors(std::move(processors_))
     , output(output_)
     , totals(totals_)
     , extremes(extremes_)
+    , aggregates(aggregates_)
 {
-    checkPulling(*processors, output, totals, extremes);
+    checkPulling(*processors, output, totals, extremes, aggregates);
 }
 
 QueryPipeline::QueryPipeline(Pipe pipe)
@@ -414,8 +429,9 @@ QueryPipeline::QueryPipeline(Pipe pipe)
         output = pipe.getOutputPort(0);
         totals = pipe.getTotalsPort();
         extremes = pipe.getExtremesPort();
+        aggregates = pipe.getAggregatesPort();
         processors = std::move(pipe.processors);
-        checkPulling(*processors, output, totals, extremes);
+        checkPulling(*processors, output, totals, extremes, aggregates);
     }
     else
     {
@@ -446,6 +462,7 @@ QueryPipeline::QueryPipeline(std::shared_ptr<IOutputFormat> format)
     auto & format_main = format->getPort(IOutputFormat::PortKind::Main);
     auto & format_totals = format->getPort(IOutputFormat::PortKind::Totals);
     auto & format_extremes = format->getPort(IOutputFormat::PortKind::Extremes);
+    auto & format_aggregates = format->getPort(IOutputFormat::PortKind::Aggregates);
 
     if (!totals)
     {
@@ -461,12 +478,21 @@ QueryPipeline::QueryPipeline(std::shared_ptr<IOutputFormat> format)
         processors->emplace_back(std::move(source));
     }
 
+    if (!aggregates)
+    {
+        auto source = std::make_shared<NullSource>(format_aggregates.getSharedHeader());
+        aggregates = &source->getPort();
+        processors->emplace_back(std::move(source));
+    }
+
     connect(*totals, format_totals);
     connect(*extremes, format_extremes);
+    connect(*aggregates, format_aggregates);
 
     input = &format_main;
     totals = nullptr;
     extremes = nullptr;
+    aggregates = nullptr;
 
     output_format = format.get();
 
@@ -494,6 +520,7 @@ void QueryPipeline::complete(std::shared_ptr<ISink> sink)
 
     drop(totals, *processors);
     drop(extremes, *processors);
+    drop(aggregates, *processors);
 
     connect(*output, sink->getPort());
     processors->emplace_back(std::move(sink));
@@ -509,6 +536,7 @@ void QueryPipeline::complete(Chain chain)
 
     drop(totals, *processors);
     drop(extremes, *processors);
+    drop(aggregates, *processors);
 
     for (auto processor : chain.getProcessors())
         processors->emplace_back(std::move(processor));
@@ -533,6 +561,7 @@ void QueryPipeline::complete(Pipe pipe)
     pipe.resize(1);
     pipe.dropExtremes();
     pipe.dropTotals();
+    pipe.dropAggregates();
     connect(*pipe.getOutputPort(0), *input);
     input = nullptr;
 
@@ -562,11 +591,13 @@ void QueryPipeline::complete(std::shared_ptr<IOutputFormat> format)
         addMaterializing(output, *processors, remove_special_column_representations);
         addMaterializing(totals, *processors, remove_special_column_representations);
         addMaterializing(extremes, *processors, remove_special_column_representations);
+        addMaterializing(aggregates, *processors, remove_special_column_representations);
     }
 
     auto & format_main = format->getPort(IOutputFormat::PortKind::Main);
     auto & format_totals = format->getPort(IOutputFormat::PortKind::Totals);
     auto & format_extremes = format->getPort(IOutputFormat::PortKind::Extremes);
+    auto & format_aggregates = format->getPort(IOutputFormat::PortKind::Aggregates);
 
     if (!totals)
     {
@@ -582,13 +613,22 @@ void QueryPipeline::complete(std::shared_ptr<IOutputFormat> format)
         processors->emplace_back(std::move(source));
     }
 
+    if (!aggregates)
+    {
+        auto source = std::make_shared<NullSource>(format_aggregates.getSharedHeader());
+        aggregates = &source->getPort();
+        processors->emplace_back(std::move(source));
+    }
+
     connect(*output, format_main);
     connect(*totals, format_totals);
     connect(*extremes, format_extremes);
+    connect(*aggregates, format_aggregates);
 
     output = nullptr;
     totals = nullptr;
     extremes = nullptr;
+    aggregates = nullptr;
 
     initRowsBeforeLimit(format.get());
     for (const auto & context : resources.interpreter_context)
@@ -602,6 +642,15 @@ void QueryPipeline::complete(std::shared_ptr<IOutputFormat> format)
     output_format = format.get();
 
     processors->emplace_back(std::move(format));
+}
+
+SharedHeader QueryPipeline::getAggregatesSharedHeader() const
+{
+    if (aggregates_shared_header)
+        return aggregates_shared_header;
+    if (aggregates)
+        return aggregates->getSharedHeader();
+    return {};
 }
 
 Block QueryPipeline::getHeader() const

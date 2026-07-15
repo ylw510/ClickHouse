@@ -16,6 +16,11 @@
 #include <Planner/PlannerContext.h>
 #include <Planner/PlannerCorrelatedSubqueries.h>
 
+#include <AggregateFunctions/AggregateFunctionFactory.h>
+#include <Parsers/ASTFunction.h>
+#include <Parsers/ASTIdentifier.h>
+#include <Parsers/ASTSelectQuery.h>
+
 
 namespace DB
 {
@@ -257,6 +262,97 @@ private:
     bool is_inside_index_hint_function = false;
 };
 
+void collectIdentifiersFromAST(const ASTPtr & ast, NameSet & identifiers)
+{
+    if (!ast)
+        return;
+
+    if (const auto * identifier = ast->as<ASTIdentifier>())
+    {
+        if (!identifier->compound())
+            identifiers.insert(identifier->name());
+        return;
+    }
+
+    if (const auto * function = ast->as<ASTFunction>())
+    {
+        if (function->arguments)
+        {
+            for (const auto & child : function->arguments->children)
+                collectIdentifiersFromAST(child, identifiers);
+        }
+        return;
+    }
+
+    for (const auto & child : ast->children)
+        collectIdentifiersFromAST(child, identifiers);
+}
+
+void collectWithAggregatesColumns(
+    const QueryNode & query_node,
+    const QueryTreeNodes & table_expressions_nodes,
+    PlannerContextPtr & planner_context)
+{
+    if (!query_node.hasWithAggregates() || table_expressions_nodes.empty())
+        return;
+
+    const auto & aggregates_query = query_node.getWithAggregates()->as<const ASTSelectQuery &>();
+
+    NameSet with_aggregates_columns;
+    if (auto select_list = aggregates_query.select())
+    {
+        for (const auto & elem : select_list->children)
+            collectIdentifiersFromAST(elem, with_aggregates_columns);
+    }
+
+    if (auto group_by = aggregates_query.groupBy())
+    {
+        for (const auto & elem : group_by->children)
+            collectIdentifiersFromAST(elem, with_aggregates_columns);
+    }
+
+    if (auto where = aggregates_query.where())
+        collectIdentifiersFromAST(where, with_aggregates_columns);
+
+    if (auto having = aggregates_query.having())
+        collectIdentifiersFromAST(having, with_aggregates_columns);
+
+    if (auto order_by = aggregates_query.orderBy())
+    {
+        for (const auto & elem : order_by->children)
+            collectIdentifiersFromAST(elem, with_aggregates_columns);
+    }
+
+    const auto & table_expression_node = table_expressions_nodes[0];
+    auto * table_node = table_expression_node->as<TableNode>();
+    auto * table_function_node = table_expression_node->as<TableFunctionNode>();
+    if (!table_node && !table_function_node)
+        return;
+
+    const auto & storage_snapshot = table_node ? table_node->getStorageSnapshot() : table_function_node->getStorageSnapshot();
+    const auto & storage_columns = storage_snapshot->metadata->getColumns();
+
+    auto & table_expression_data = planner_context->getOrCreateTableExpressionData(table_expression_node);
+    auto & global_planner_context = planner_context->getGlobalPlannerContext();
+
+    for (const auto & column_name : with_aggregates_columns)
+    {
+        if (table_expression_data.hasColumn(column_name))
+        {
+            table_expression_data.markSelectedColumn(column_name);
+            continue;
+        }
+
+        if (!storage_columns.has(column_name))
+            continue;
+
+        const auto & column_description = storage_columns.get(column_name);
+        NameAndTypePair column{column_description.name, column_description.type};
+        const auto & column_identifier = global_planner_context->createColumnIdentifierOrGet(column, table_expression_node);
+        table_expression_data.addColumn(column, column_identifier, true);
+    }
+}
+
 class CollectPrewhereTableExpressionVisitor : public ConstInDepthQueryTreeVisitor<CollectPrewhereTableExpressionVisitor>
 {
 public:
@@ -457,6 +553,8 @@ void collectTableExpressionData(QueryTreeNodePtr & query_node, PlannerContextPtr
 
         table_expression_data.setPrewhereFilterActions(std::move(prewhere_actions_dag));
     }
+
+    collectWithAggregatesColumns(query_node_typed, table_expressions_nodes, planner_context);
 }
 
 void collectSourceColumns(QueryTreeNodePtr & expression_node, PlannerContextPtr & planner_context, bool keep_alias_columns)

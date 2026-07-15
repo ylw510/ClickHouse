@@ -13,21 +13,22 @@ namespace DB
 class Block;
 class WriteBuffer;
 
-/** Output format have three inputs and no outputs. It writes data from WriteBuffer.
+/** Output format have four inputs and no outputs. It writes data from WriteBuffer.
   *
-  * First input is for main resultset, second is for "totals" and third is for "extremes".
-  * It's not necessarily to connect "totals" or "extremes" ports (they may remain dangling).
+  * First input is for main resultset, second is for "totals", third is for "extremes", fourth is for "aggregates".
+  * It's not necessarily to connect "totals", "extremes" or "aggregates" ports (they may remain dangling).
   *
-  * Data from input ports are pulled in order: first, from main input, then totals, then extremes.
+  * Data from input ports are pulled in order: first, from main input, then totals, then extremes, then aggregates.
   *
-  * By default, data for "totals" and "extremes" is ignored.
+  * By default, data for "totals", "extremes" and "aggregates" is ignored.
   */
 class IOutputFormat : public IProcessor
 {
 public:
-    enum PortKind { Main = 0, Totals = 1, Extremes = 2 };
+    enum PortKind { Main = 0, Totals = 1, Extremes = 2, Aggregates = 3 };
 
     IOutputFormat(SharedHeader header_, WriteBuffer & out_);
+    IOutputFormat(SharedHeader header_, WriteBuffer & out_, SharedHeader aggregates_header_);
 
     Status prepare() override;
     void work() override;
@@ -68,6 +69,7 @@ public:
 
     void setTotals(const Block & totals);
     void setExtremes(const Block & extremes);
+    virtual void appendAggregates(const Block & aggregates);
 
     virtual bool supportsWritingException() const { return false; }
     virtual void setException(const String & /*exception_message*/) {}
@@ -132,6 +134,7 @@ protected:
     virtual void consume(Chunk) = 0;
     virtual void consumeTotals(Chunk) {}
     virtual void consumeExtremes(Chunk) {}
+    virtual void consumeAggregates(Chunk) {}
     virtual void finalizeImpl() {}
     virtual void finalizeBuffers() {}
     virtual void writePrefix() {}
@@ -176,6 +179,7 @@ protected:
         size_t rows_before_aggregation = 0;
         Chunk totals;
         Chunk extremes;
+        Chunks aggregates;
     };
 
     /// In some formats the way we print extremes depends on

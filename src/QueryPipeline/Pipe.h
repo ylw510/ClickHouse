@@ -50,6 +50,7 @@ public:
     OutputPort * getOutputPort(size_t pos) const { return output_ports[pos]; }
     OutputPort * getTotalsPort() const { return totals_port; }
     OutputPort * getExtremesPort() const { return extremes_port; }
+    OutputPort * getAggregatesPort() const { return aggregates_port; }
 
     /// Add processor to list, add it output ports to output_ports.
     /// Processor shouldn't have input ports, output ports shouldn't be connected.
@@ -63,6 +64,10 @@ public:
     /// Drop totals and extremes (create NullSink for them).
     void dropTotals();
     void dropExtremes();
+    void dropAggregates();
+
+    /// Move output port at given index to aggregates_port and remove from output_ports.
+    void extractAggregatesPort(size_t output_index);
 
     /// Add processor to list. It should have size() input ports with compatible header.
     /// Output ports should have same headers.
@@ -99,7 +104,7 @@ public:
     using Transformer = std::function<Processors(const OutputPortRawPtrs & ports)>;
 
     /// Transform Pipe in general way.
-    void transform(const Transformer & transformer, bool check_ports = true);
+    void transform(const Transformer & transformer, bool check_ports = true, bool check_output_headers = true);
 
     /// Unite several pipes together. They should have same header.
     static Pipe unitePipes(Pipes pipes);
@@ -120,6 +125,7 @@ private:
     OutputPortRawPtrs output_ports;
     OutputPort * totals_port = nullptr;
     OutputPort * extremes_port = nullptr;
+    OutputPort * aggregates_port = nullptr;
 
     /// It is the max number of processors which can be executed in parallel for each step.
     /// Usually, it's the same as the number of output ports.

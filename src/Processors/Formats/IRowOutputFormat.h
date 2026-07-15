@@ -32,12 +32,15 @@ public:
 
 protected:
     IRowOutputFormat(SharedHeader header, WriteBuffer & out_);
+    IRowOutputFormat(SharedHeader header, WriteBuffer & out_, SharedHeader aggregates_header);
     void consume(Chunk chunk) override;
     void consumeTotals(Chunk chunk) override;
     void consumeExtremes(Chunk chunk) override;
+    void consumeAggregates(Chunk chunk) override;
 
     virtual bool supportTotals() const { return false; }
     virtual bool supportExtremes() const { return false; }
+    virtual bool supportAggregates() const { return false; }
 
     /** Write a row.
       * Default implementation calls methods to write single values and delimiters
@@ -47,6 +50,7 @@ protected:
     virtual void writeMinExtreme(const Columns & columns, size_t row_num);
     virtual void writeMaxExtreme(const Columns & columns, size_t row_num);
     virtual void writeTotals(const Columns & columns, size_t row_num);
+    virtual void writeAggregates(const Columns & columns, size_t row_num);
 
     /** Write single value. */
     virtual void writeField(const IColumn & column, const ISerialization & serialization, size_t row_num) = 0;
@@ -61,6 +65,8 @@ protected:
     virtual void writeAfterTotals() {}
     virtual void writeBeforeExtremes() {}
     virtual void writeAfterExtremes() {}
+    virtual void writeBeforeAggregates() {}
+    virtual void writeAfterAggregates() {}
     void finalizeImpl() override {}  /// Write something after resultset, totals end extremes.
 
     bool haveWrittenData() { return !first_row || getRowsReadBefore() != 0; }
@@ -72,6 +78,11 @@ protected:
     Serializations serializations;
 
     bool first_row = true;
+
+    bool has_separate_aggregates_header = false;
+    size_t aggregates_num_columns = 0;
+    DataTypes aggregates_types;
+    Serializations aggregates_serializations;
 };
 
 }

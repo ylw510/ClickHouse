@@ -74,6 +74,26 @@ static OutputPort * uniteExtremes(const OutputPortRawPtrs & ports, SharedHeader 
     return extremes_port;
 }
 
+static OutputPort * uniteAggregates(const OutputPortRawPtrs & ports, SharedHeader & header, Processors & processors)
+{
+    if (ports.empty())
+        return nullptr;
+
+    if (ports.size() == 1)
+        return ports.front();
+
+    auto concat = std::make_shared<ConcatProcessor>(header, ports.size());
+    auto * aggregates_port = &concat->getOutputs().front();
+
+    auto in = concat->getInputs().begin();
+    for (const auto & port : ports)
+        connect(*port, *(in++));
+
+    processors.emplace_back(std::move(concat));
+
+    return aggregates_port;
+}
+
 static OutputPort * uniteTotals(const OutputPortRawPtrs & ports, SharedHeader & header, Processors & processors)
 {
     if (ports.empty())
@@ -307,6 +327,7 @@ Pipe Pipe::unitePipes(Pipes pipes, Processors * collected_processors, bool allow
 
     OutputPortRawPtrs totals;
     OutputPortRawPtrs extremes;
+    OutputPortRawPtrs aggregates;
     res.collected_processors = collected_processors;
     res.header = std::make_shared<const Block>(getCommonHeader(pipes));
 
@@ -325,6 +346,9 @@ Pipe Pipe::unitePipes(Pipes pipes, Processors * collected_processors, bool allow
 
         if (pipe.extremes_port)
             extremes.emplace_back(pipe.extremes_port);
+
+        if (pipe.aggregates_port)
+            aggregates.emplace_back(pipe.aggregates_port);
     }
 
     Processors totals_processors;
@@ -335,10 +359,19 @@ Pipe Pipe::unitePipes(Pipes pipes, Processors * collected_processors, bool allow
     res.extremes_port = uniteExtremes(extremes, res.header, extremes_processors);
     res.processors->append_range(extremes_processors);
 
+    Processors aggregates_processors;
+    if (!aggregates.empty())
+    {
+        SharedHeader aggregates_header = aggregates.front()->getSharedHeader();
+        res.aggregates_port = uniteAggregates(aggregates, aggregates_header, aggregates_processors);
+        res.processors->append_range(aggregates_processors);
+    }
+
     if (res.collected_processors)
     {
         res.collected_processors->append_range(std::move(totals_processors));
         res.collected_processors->append_range(std::move(extremes_processors));
+        res.collected_processors->append_range(std::move(aggregates_processors));
     }
 
     return res;
@@ -426,6 +459,27 @@ void Pipe::dropTotals()
 void Pipe::dropExtremes()
 {
     dropPort(extremes_port, *processors, collected_processors);
+}
+
+void Pipe::dropAggregates()
+{
+    dropPort(aggregates_port, *processors, collected_processors);
+}
+
+void Pipe::extractAggregatesPort(size_t output_index)
+{
+    if (output_index >= output_ports.size())
+        throw Exception(ErrorCodes::LOGICAL_ERROR, "Cannot extract aggregates port at index {} from pipe with {} output ports",
+            output_index, output_ports.size());
+
+    if (aggregates_port)
+        throw Exception(ErrorCodes::LOGICAL_ERROR, "Aggregates port was already extracted from pipe");
+
+    aggregates_port = output_ports[output_index];
+    output_ports.erase(output_ports.begin() + static_cast<ssize_t>(output_index));
+
+    if (!output_ports.empty())
+        header = output_ports.front()->getSharedHeader();
 }
 
 void Pipe::addTransform(ProcessorPtr transform)
@@ -837,7 +891,7 @@ void Pipe::setSinks(const Pipe::ProcessorGetterSharedHeaderWithStreamKind & gett
     header = std::make_shared<const Block>(Block{});
 }
 
-void Pipe::transform(const Transformer & transformer, bool check_ports)
+void Pipe::transform(const Transformer & transformer, bool check_ports, bool check_output_headers)
 {
     if (output_ports.empty())
         throw Exception(ErrorCodes::LOGICAL_ERROR, "Cannot transform empty Pipe");
@@ -911,8 +965,11 @@ void Pipe::transform(const Transformer & transformer, bool check_ports)
                         "Transformation of Pipe is not valid because processors don't have any disconnected output ports");
 
     header = output_ports.front()->getSharedHeader();
-    for (size_t i = 1; i < output_ports.size(); ++i)
-        assertBlocksHaveEqualStructure(*header, output_ports[i]->getHeader(), "Pipe");
+    if (check_output_headers)
+    {
+        for (size_t i = 1; i < output_ports.size(); ++i)
+            assertBlocksHaveEqualStructure(*header, output_ports[i]->getHeader(), "Pipe");
+    }
 
     if (totals_port)
         assertBlocksHaveEqualStructure(*header, totals_port->getHeader(), "Pipes");

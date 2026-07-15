@@ -19,6 +19,18 @@ IRowOutputFormat::IRowOutputFormat(SharedHeader header, WriteBuffer & out_)
 {
 }
 
+IRowOutputFormat::IRowOutputFormat(SharedHeader header, WriteBuffer & out_, SharedHeader aggregates_header)
+    : IOutputFormat(header, out_, aggregates_header)
+    , num_columns(header->columns())
+    , types(header->getDataTypes())
+    , serializations(header->getSerializations())
+    , has_separate_aggregates_header(aggregates_header && aggregates_header != header)
+    , aggregates_num_columns(aggregates_header ? aggregates_header->columns() : 0)
+    , aggregates_types(aggregates_header ? aggregates_header->getDataTypes() : DataTypes{})
+    , aggregates_serializations(aggregates_header ? aggregates_header->getSerializations() : Serializations{})
+{
+}
+
 void IRowOutputFormat::consume(DB::Chunk chunk)
 {
     auto num_rows = chunk.getNumRows();
@@ -71,6 +83,27 @@ void IRowOutputFormat::consumeExtremes(DB::Chunk chunk)
     writeAfterExtremes();
 }
 
+void IRowOutputFormat::consumeAggregates(DB::Chunk chunk)
+{
+    if (!supportAggregates())
+        return;
+
+    auto num_rows = chunk.getNumRows();
+    if (!num_rows)
+        return;
+
+    const auto & columns = chunk.getColumns();
+
+    writeBeforeAggregates();
+    for (size_t row = 0; row < num_rows; ++row)
+    {
+        if (row != 0)
+            writeRowBetweenDelimiter();
+        writeAggregates(columns, row);
+    }
+    writeAfterAggregates();
+}
+
 void IRowOutputFormat::write(const Columns & columns, size_t row_num)
 {
     writeRowStartDelimiter();
@@ -97,6 +130,11 @@ void IRowOutputFormat::writeMaxExtreme(const DB::Columns & columns, size_t row_n
 }
 
 void IRowOutputFormat::writeTotals(const DB::Columns & columns, size_t row_num)
+{
+    write(columns, row_num);
+}
+
+void IRowOutputFormat::writeAggregates(const DB::Columns & columns, size_t row_num)
 {
     write(columns, row_num);
 }

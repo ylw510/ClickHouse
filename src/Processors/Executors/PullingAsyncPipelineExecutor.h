@@ -2,6 +2,8 @@
 #include <functional>
 #include <memory>
 
+#include <Core/Block_fwd.h>
+
 namespace DB
 {
 
@@ -50,6 +52,9 @@ public:
     /// Get totals and extremes. Returns empty chunk if doesn't have any.
     Block getTotalsBlock();
     Block getExtremesBlock();
+
+    /// Get aggregates blocks. Returns empty list if doesn't have any.
+    Blocks getAggregatesBlocks();
 
     /// Get query profile info.
     ProfileInfo & getProfileInfo();

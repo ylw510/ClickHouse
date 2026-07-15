@@ -272,6 +272,13 @@ void ASTSelectQuery::formatImpl(WriteBuffer & ostr, const FormatSettings & s, Fo
         limitOffset()->format(ostr, s, state, frame);
     }
 
+    if (with_aggregates)
+    {
+        ostr << s.nl_or_ws << indent_str << "WITH AGGREGATES (";
+        with_aggregates->format(ostr, s, state, frame);
+        ostr << ")";
+    }
+
     if (settings())
     {
         ostr << s.nl_or_ws << indent_str << "SETTINGS ";

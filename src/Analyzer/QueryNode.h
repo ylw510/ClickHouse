@@ -188,6 +188,21 @@ public:
         is_limit_by_all = is_limit_by_all_value;
     }
 
+    bool hasWithAggregates() const
+    {
+        return with_aggregates != nullptr;
+    }
+
+    const ASTPtr & getWithAggregates() const
+    {
+        return with_aggregates;
+    }
+
+    void setWithAggregates(ASTPtr with_aggregates_value)
+    {
+        with_aggregates = std::move(with_aggregates_value);
+    }
+
     /// Returns true if query node has LIMIT WITH TIES, false otherwise
     bool isLimitWithTies() const
     {
@@ -707,6 +722,8 @@ private:
     bool is_group_by_all = false;
     bool is_order_by_all = false;
     bool is_limit_by_all = false;
+
+    ASTPtr with_aggregates;
 
     std::string cte_name;
     NamesAndTypes projection_columns;

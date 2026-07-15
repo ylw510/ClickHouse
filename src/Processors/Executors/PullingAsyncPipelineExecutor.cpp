@@ -48,7 +48,10 @@ PullingAsyncPipelineExecutor::PullingAsyncPipelineExecutor(QueryPipeline & pipel
     if (!pipeline.pulling())
         throw Exception(ErrorCodes::LOGICAL_ERROR, "Pipeline for PullingAsyncPipelineExecutor must be pulling");
 
-    lazy_format = std::make_shared<LazyOutputFormat>(pipeline.output->getSharedHeader());
+    if (pipeline.hasAggregates())
+        lazy_format = std::make_shared<LazyOutputFormat>(pipeline.getSharedHeader(), pipeline.getAggregatesSharedHeader());
+    else
+        lazy_format = std::make_shared<LazyOutputFormat>(pipeline.getSharedHeader());
     pipeline.complete(lazy_format);
 }
 
@@ -253,6 +256,21 @@ Block PullingAsyncPipelineExecutor::getExtremesBlock()
 
     const auto & header = lazy_format->getPort(IOutputFormat::PortKind::Extremes).getHeader();
     return header.cloneWithColumns(extremes.detachColumns());
+}
+
+Blocks PullingAsyncPipelineExecutor::getAggregatesBlocks()
+{
+    Blocks result;
+    auto aggregates_chunks = lazy_format->getAggregates();
+    if (aggregates_chunks.empty())
+        return result;
+
+    const auto & header = lazy_format->getPort(IOutputFormat::PortKind::Aggregates).getHeader();
+    result.reserve(aggregates_chunks.size());
+    for (auto & chunk : aggregates_chunks)
+        result.emplace_back(header.cloneWithColumns(chunk.detachColumns()));
+
+    return result;
 }
 
 ProfileInfo & PullingAsyncPipelineExecutor::getProfileInfo()

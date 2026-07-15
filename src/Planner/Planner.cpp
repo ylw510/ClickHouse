@@ -37,6 +37,7 @@
 #include <Processors/QueryPlan/NegativeOffsetStep.h>
 #include <Processors/QueryPlan/ExtremesStep.h>
 #include <Processors/QueryPlan/TotalsHavingStep.h>
+#include <Processors/QueryPlan/HitAndAggregateStep.h>
 #include <Processors/QueryPlan/RollupStep.h>
 #include <Processors/QueryPlan/CubeStep.h>
 #include <Processors/QueryPlan/LimitByStep.h>
@@ -47,6 +48,7 @@
 #include <QueryPipeline/QueryPipelineBuilder.h>
 
 #include <Interpreters/Context.h>
+#include <Parsers/ASTSelectQuery.h>
 #include <Interpreters/convertFieldToType.h>
 #include <Interpreters/HashTablesStatistics.h>
 #include <Interpreters/StorageID.h>
@@ -1286,7 +1288,8 @@ void addPreliminarySortOrDistinctOrLimitStepsIfNeeded(
     if (query_processing_info.isSecondStage() ||
         expressions_analysis_result.hasAggregation() ||
         expressions_analysis_result.hasHaving() ||
-        expressions_analysis_result.hasWindow())
+        expressions_analysis_result.hasWindow() ||
+        query_node.hasWithAggregates())
         return;
 
     if (expressions_analysis_result.hasSort())
@@ -1553,6 +1556,45 @@ void addLimitStep(
             limit_with_ties_sort_description);
         query_plan.addStep(std::move(fractional_limit_step));
     }
+}
+
+void addHitAndAggregateStep(
+    QueryPlan & query_plan,
+    PlannerExpressionsAnalysisResult & expression_analysis_result,
+    const QueryAnalysisResult & query_analysis_result,
+    const PlannerContextPtr & planner_context,
+    const QueryNode & query_node)
+{
+    const auto & projection = expression_analysis_result.getProjection();
+    std::optional<ActionsDAG> hits_projection;
+    SharedHeader hits_header = query_plan.getCurrentHeader();
+
+    if (projection.projection_actions)
+    {
+        hits_projection = projection.projection_actions->dag.clone();
+        hits_header = std::make_shared<const Block>(hits_projection->updateHeader(*query_plan.getCurrentHeader()));
+    }
+
+    const auto & aggregates_ast = query_node.getWithAggregates()->as<const ASTSelectQuery &>();
+    auto agg_params = buildAggregatorParamsFromAggregatesSubquery(
+        aggregates_ast, *query_plan.getCurrentHeader(), planner_context->getQueryContext());
+    auto aggregates_header = std::make_shared<const Block>(Aggregator::Params::getHeader(
+        *query_plan.getCurrentHeader(), false, agg_params.keys, agg_params.aggregates, true));
+
+    const auto & settings = planner_context->getQueryContext()->getSettingsRef();
+    auto step = std::make_unique<HitAndAggregateStep>(
+        query_plan.getCurrentHeader(),
+        hits_header,
+        aggregates_header,
+        std::move(hits_projection),
+        query_analysis_result.sort_description,
+        query_analysis_result.limit_length,
+        query_analysis_result.limit_offset,
+        std::move(agg_params),
+        settings[Setting::max_block_size],
+        settings[Setting::max_threads]);
+    step->setStepDescription("Hit and aggregate");
+    query_plan.addStep(std::move(step));
 }
 
 void addExtremesStepIfNeeded(QueryPlan & query_plan, const PlannerContextPtr & planner_context)
@@ -2402,7 +2444,7 @@ void Planner::buildPlanForQueryNode()
                         "Before WINDOW",
                         useful_sets);
             }
-            else
+            else if (!query_node.hasWithAggregates())
             {
                 /** There are no window functions, so we can execute the
                   * Projection expressions, preliminary DISTINCT and before ORDER BY expressions
@@ -2512,14 +2554,17 @@ void Planner::buildPlanForQueryNode()
                 addFilterStep(planner_context, query_plan, expression_analysis_result.getQualify(), select_query_options, "QUALIFY", useful_sets);
 
             auto & projection_analysis_result = expression_analysis_result.getProjection();
-            addExpressionStep(
-                planner_context,
-                query_plan,
-                projection_analysis_result.projection_actions,
-                projection_analysis_result.correlated_subtrees,
-                select_query_options,
-                "Projection",
-                useful_sets);
+            if (!query_node.hasWithAggregates())
+            {
+                addExpressionStep(
+                    planner_context,
+                    query_plan,
+                    projection_analysis_result.projection_actions,
+                    projection_analysis_result.correlated_subtrees,
+                    select_query_options,
+                    "Projection",
+                    useful_sets);
+            }
 
             if (query_node.isDistinct())
             {
@@ -2532,7 +2577,7 @@ void Planner::buildPlanForQueryNode()
                     true /*pre_distinct*/);
             }
 
-            if (expression_analysis_result.hasSort())
+            if (expression_analysis_result.hasSort() && !query_node.hasWithAggregates())
             {
                 auto & sort_analysis_result = expression_analysis_result.getSort();
                 addExpressionStep(
@@ -2550,7 +2595,7 @@ void Planner::buildPlanForQueryNode()
             /// There are no aggregation or windows, all expressions before ORDER BY executed on shards
         }
 
-        if (expression_analysis_result.hasSort())
+        if (!query_node.hasWithAggregates() && expression_analysis_result.hasSort())
         {
             /** If there is an ORDER BY for distributed query processing,
               * but there is no aggregation, then on the remote servers ORDER BY was made
@@ -2622,6 +2667,16 @@ void Planner::buildPlanForQueryNode()
 
         bool limit_applied = applied_prelimit || (query_node.isLimitWithTies() && apply_offset);
 
+        if (query_node.hasWithAggregates())
+        {
+            if (expression_analysis_result.hasAggregation())
+                throw Exception(ErrorCodes::NOT_IMPLEMENTED, "WITH AGGREGATES is not supported with GROUP BY on main query");
+
+            addHitAndAggregateStep(query_plan, expression_analysis_result, query_analysis_result, planner_context, query_node);
+            limit_applied = true;
+        }
+        else
+        {
         /** Limit is no longer needed if there is prelimit.
           *
           * That LIMIT cannot be applied if OFFSET should not be applied, since LIMIT will apply OFFSET too.
@@ -2632,9 +2687,10 @@ void Planner::buildPlanForQueryNode()
             addLimitStep(query_plan, query_analysis_result, planner_context, query_node);
         else if (!limit_applied && apply_offset && query_node.hasOffset())
             addOffsetStep(query_plan, query_analysis_result);
+        }
 
         /// Project names is not done on shards, because initiator will not find columns in blocks
-        if (!query_processing_info.isToAggregationState())
+        if (!query_processing_info.isToAggregationState() && !query_node.hasWithAggregates())
         {
             auto & projection_analysis_result = expression_analysis_result.getProjection();
             addExpressionStep(

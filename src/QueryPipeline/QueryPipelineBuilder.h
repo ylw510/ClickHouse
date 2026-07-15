@@ -77,7 +77,10 @@ public:
 
     using Transformer = std::function<Processors(const OutputPortRawPtrs & ports)>;
     /// Transform pipeline in general way.
-    void transform(const Transformer & transformer, bool check_ports = true);
+    void transform(const Transformer & transformer, bool check_ports = true, bool check_output_headers = true);
+
+    /// Move output port at given index to aggregates_port.
+    void extractAggregatesPort(size_t output_index);
 
     /// Add TotalsHavingTransform. Resize pipeline to single input. Adds totals port.
     void addTotalsHavingTransform(ProcessorPtr transform);
@@ -187,6 +190,18 @@ public:
 
     bool hasTotals() const { return pipe.getTotalsPort() != nullptr; }
     bool hasExtremes() const { return pipe.getExtremesPort() != nullptr; }
+    bool hasAggregates() const { return pipe.getAggregatesPort() != nullptr; }
+
+    OutputPort * getAggregatesPort() const { return pipe.getAggregatesPort(); }
+    void setAggregatesSharedHeader(SharedHeader aggregates_header_) { aggregates_shared_header = std::move(aggregates_header_); }
+    SharedHeader getAggregatesSharedHeader() const
+    {
+        if (aggregates_shared_header)
+            return aggregates_shared_header;
+        if (auto * port = pipe.getAggregatesPort())
+            return port->getSharedHeader();
+        return {};
+    }
 
     const Block & getHeader() const { return pipe.getHeader(); }
     const SharedHeader & getSharedHeader() const { return pipe.getSharedHeader(); }
@@ -254,6 +269,8 @@ private:
 
     QueryStatusPtr process_list_element;
     ProgressCallback progress_callback = nullptr;
+
+    SharedHeader aggregates_shared_header;
 
     void checkInitialized();
     void checkInitializedAndNotCompleted();

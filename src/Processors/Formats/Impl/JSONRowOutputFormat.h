@@ -11,12 +11,19 @@ namespace DB
 
 /** Stream for output data in JSON format.
   */
-class JSONRowOutputFormat : public RowOutputFormatWithExceptionHandlerAdaptor<RowOutputFormatWithUTF8ValidationAdaptor, bool>
+class JSONRowOutputFormat : public RowOutputFormatWithExceptionHandlerAdaptor<RowOutputFormatWithUTF8ValidationAdaptor, SharedHeader, bool>
 {
 public:
     JSONRowOutputFormat(
         WriteBuffer & out_,
         SharedHeader header,
+        const FormatSettings & settings_,
+        bool yield_strings_);
+
+    JSONRowOutputFormat(
+        WriteBuffer & out_,
+        SharedHeader header,
+        SharedHeader aggregates_header,
         const FormatSettings & settings_,
         bool yield_strings_);
 
@@ -48,14 +55,20 @@ protected:
     void writeMinExtreme(const Columns & columns, size_t row_num) override;
     void writeMaxExtreme(const Columns & columns, size_t row_num) override;
     void writeTotals(const Columns & columns, size_t row_num) override;
+    void writeAggregates(const Columns & columns, size_t row_num) override;
 
     bool supportTotals() const override { return true; }
     bool supportExtremes() const override { return true; }
+    void appendAggregates(const Block & aggregates) override;
+
+    bool supportAggregates() const override { return has_aggregates; }
 
     void writeBeforeTotals() override;
     void writeAfterTotals() override;
     void writeBeforeExtremes() override;
     void writeAfterExtremes() override;
+    void writeBeforeAggregates() override;
+    void writeAfterAggregates() override;
 
     void finalizeImpl() override;
     void resetFormatterImpl() override;
@@ -67,6 +80,9 @@ protected:
     size_t field_number = 0;
     size_t row_count = 0;
     Names names;   /// The column names are pre-escaped to be put into JSON string literal.
+    Names aggregates_names;
+    bool has_aggregates = false;
+    bool aggregates_started = false;
 
     FormatSettings settings;
 

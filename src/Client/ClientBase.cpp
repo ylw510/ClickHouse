@@ -674,6 +674,13 @@ void ClientBase::onExtremes(Block & block, ASTPtr parsed_query)
 }
 
 
+void ClientBase::onAggregates(Block & block, ASTPtr parsed_query)
+{
+    initOutputFormat(block, parsed_query);
+    output_format->appendAggregates(materializeBlock(block, !output_format->supportsSpecialSerializationKinds()));
+}
+
+
 void ClientBase::onReceiveExceptionFromServer(std::unique_ptr<Exception> && e)
 {
     have_error = true;
@@ -1617,6 +1624,11 @@ bool ClientBase::receiveAndProcessPacket(ASTPtr parsed_query, bool cancelled_)
         case Protocol::Server::Extremes:
             if (!cancelled_)
                 onExtremes(packet.block, parsed_query);
+            return true;
+
+        case Protocol::Server::Aggregates:
+            if (!cancelled_)
+                onAggregates(packet.block, parsed_query);
             return true;
 
         case Protocol::Server::Exception:
@@ -3627,6 +3639,7 @@ Block ClientBase::fetchDocumentation(const String & query, const String & word)
             case Protocol::Server::ProfileEvents:
             case Protocol::Server::Totals:
             case Protocol::Server::Extremes:
+            case Protocol::Server::Aggregates:
             case Protocol::Server::Log:
             case Protocol::Server::TimezoneUpdate:
             case Protocol::Server::PartUUIDs: continue;

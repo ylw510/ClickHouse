@@ -44,6 +44,7 @@ struct LocalQueryState
 
     /// Current block to be sent next.
     std::optional<Block> block;
+    Blocks pending_aggregates_blocks;
     std::shared_ptr<ColumnsDescription> columns_description;
     std::optional<ProfileInfo> profile_info;
 
@@ -53,6 +54,7 @@ struct LocalQueryState
 
     bool sent_totals = false;
     bool sent_extremes = false;
+    bool sent_aggregates = false;
     bool sent_progress = false;
     bool sent_profile_info = false;
     bool sent_profile_events = false;

@@ -17,7 +17,12 @@ namespace FailPoints
 }
 
 IOutputFormat::IOutputFormat(SharedHeader header_, WriteBuffer & out_)
-    : IProcessor({header_, header_, header_}, {}), out(out_)
+    : IProcessor({header_, header_, header_, header_}, {}), out(out_)
+{
+}
+
+IOutputFormat::IOutputFormat(SharedHeader header_, WriteBuffer & out_, SharedHeader aggregates_header_)
+    : IProcessor({header_, header_, header_, aggregates_header_ ? aggregates_header_ : header_}, {}), out(out_)
 {
 }
 
@@ -26,7 +31,7 @@ IOutputFormat::Status IOutputFormat::prepare()
     if (has_input)
         return Status::Ready;
 
-    for (auto kind : {Main, Totals, Extremes})
+    for (auto kind : {Main, Totals, Extremes, Aggregates})
     {
         auto & input = getPort(kind);
 
@@ -116,6 +121,10 @@ void IOutputFormat::work()
             writeSuffixIfNeeded();
             consumeExtremes(std::move(current_chunk));
             break;
+        case Aggregates:
+            writeSuffixIfNeeded();
+            consumeAggregates(std::move(current_chunk));
+            break;
     }
 
     if (auto_flush)
@@ -197,6 +206,16 @@ void IOutputFormat::setExtremes(const Block & extremes)
     std::lock_guard lock(writing_mutex);
     writeSuffixIfNeeded();
     consumeExtremes(Chunk(extremes.getColumns(), extremes.rows()));
+}
+
+void IOutputFormat::appendAggregates(const Block & aggregates)
+{
+    if (!aggregates.rows())
+        return;
+
+    std::lock_guard lock(writing_mutex);
+    writeSuffixIfNeeded();
+    consumeAggregates(Chunk(aggregates.getColumns(), aggregates.rows()));
 }
 
 void IOutputFormat::onProgress(const Progress & progress)

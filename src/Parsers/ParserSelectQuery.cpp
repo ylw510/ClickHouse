@@ -14,6 +14,8 @@
 #include <Parsers/ASTOrderByElement.h>
 #include <Parsers/ASTExpressionList.h>
 #include <Parsers/ASTWithElement.h>
+#include <Common/StringUtils.h>
+#include <Poco/String.h>
 
 
 namespace DB
@@ -28,6 +30,7 @@ namespace ErrorCodes
     extern const int TOP_AND_LIMIT_TOGETHER;
     extern const int WITH_TIES_WITHOUT_ORDER_BY;
     extern const int OFFSET_FETCH_WITHOUT_ORDER_BY;
+    extern const int BAD_ARGUMENTS;
 }
 
 
@@ -76,6 +79,7 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
     ParserOrderByExpressionList order_list;
     ParserGroupingSetsExpressionList grouping_sets_list;
     ParserInterpolateExpressionList interpolate_list;
+    ParserSelectQuery parser_with_aggregates;
 
     ParserToken open_bracket(TokenType::OpeningRoundBracket);
     ParserToken close_bracket(TokenType::ClosingRoundBracket);
@@ -588,6 +592,27 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
     /// WITH TIES was used without ORDER BY
     if (!order_expression_list && select_query->limit_with_ties)
         throw Exception(ErrorCodes::WITH_TIES_WITHOUT_ORDER_BY, "Can not use WITH TIES without ORDER BY");
+
+    /// WITH AGGREGATES ( select )
+    if (s_with.ignore(pos, expected))
+    {
+        if (pos->type != TokenType::BareWord || Poco::toUpper(String(pos->begin, pos->end)) != "AGGREGATES")
+            throw Exception(ErrorCodes::SYNTAX_ERROR, "Expected AGGREGATES after WITH");
+
+        ++pos;
+
+        if (!open_bracket.ignore(pos, expected))
+            return false;
+
+        if (!parser_with_aggregates.parse(pos, select_query->with_aggregates, expected))
+            return false;
+
+        if (!close_bracket.ignore(pos, expected))
+            return false;
+
+        if (select_query->with_aggregates->as<ASTSelectQuery &>().tables())
+            throw Exception(ErrorCodes::BAD_ARGUMENTS, "WITH AGGREGATES subquery must not have FROM clause");
+    }
 
     /// SETTINGS key1 = value1, key2 = value2, ...
     if (s_settings.ignore(pos, expected))

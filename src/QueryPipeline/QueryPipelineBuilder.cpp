@@ -115,10 +115,16 @@ void QueryPipelineBuilder::addChain(Chain chain)
     pipe.addChains(std::move(chains));
 }
 
-void QueryPipelineBuilder::transform(const Transformer & transformer, bool check_ports)
+void QueryPipelineBuilder::transform(const Transformer & transformer, bool check_ports, bool check_output_headers)
 {
     checkInitializedAndNotCompleted();
-    pipe.transform(transformer, check_ports);
+    pipe.transform(transformer, check_ports, check_output_headers);
+}
+
+void QueryPipelineBuilder::extractAggregatesPort(size_t output_index)
+{
+    checkInitializedAndNotCompleted();
+    pipe.extractAggregatesPort(output_index);
 }
 
 void QueryPipelineBuilder::setSinks(const Pipe::ProcessorGetterSharedHeaderWithStreamKind & getter)
@@ -928,6 +934,7 @@ QueryPipeline QueryPipelineBuilder::getPipeline(QueryPipelineBuilder builder)
     res.setConcurrencyControl(builder.getConcurrencyControl());
     res.setProcessListElement(builder.process_list_element);
     res.setProgressCallback(builder.progress_callback);
+    res.aggregates_shared_header = std::move(builder.aggregates_shared_header);
     return res;
 }
 

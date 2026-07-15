@@ -86,7 +86,8 @@ public:
         std::shared_ptr<Processors> processors_,
         OutputPort * output_,
         OutputPort * totals_ = nullptr,
-        OutputPort * extremes_ = nullptr);
+        OutputPort * extremes_ = nullptr,
+        OutputPort * aggregates_ = nullptr);
 
     bool initialized() const { return !processors->empty(); }
     /// When initialized, exactly one of the following is true.
@@ -108,6 +109,9 @@ public:
     /// Only for pushing and pulling.
     Block getHeader() const;
     SharedHeader getSharedHeader() const;
+
+    bool hasAggregates() const { return aggregates != nullptr; }
+    SharedHeader getAggregatesSharedHeader() const;
 
     size_t getNumThreads() const { return num_threads; }
     void setNumThreads(size_t num_threads_) { num_threads = num_threads_; }
@@ -173,6 +177,8 @@ private:
     OutputPort * output = nullptr;
     OutputPort * totals = nullptr;
     OutputPort * extremes = nullptr;
+    OutputPort * aggregates = nullptr;
+    SharedHeader aggregates_shared_header;
 
     QueryStatusPtr process_list_element;
 
