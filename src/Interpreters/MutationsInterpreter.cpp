@@ -545,6 +545,7 @@ MutationsInterpreter::MutationsInterpreter(
     : source(std::move(source_))
     , metadata_snapshot(metadata_snapshot_)
     , commands(std::move(commands_))
+    , source_column_type_overrides(settings_.source_column_type_overrides)
     , available_columns(std::move(available_columns_))
     , settings(std::move(settings_))
     , select_limits(SelectQueryOptions().analyze(!settings.can_execute).ignoreLimits())
@@ -560,6 +561,68 @@ MutationsInterpreter::MutationsInterpreter(
     new_context->setSetting("enable_parallel_replicas", Field(0));
 
     context = std::move(new_context);
+}
+
+void MutationsInterpreter::collectSourceColumnTypeOverrides()
+{
+    /// Prefer explicit overrides (ALTER-time validation). Otherwise, when mutating a part,
+    /// UPDATE columns whose on-disk type differs from metadata are read/analyzed as storage types
+    /// (fused MODIFY COLUMN + UPDATE: expression sees the previous type, result is cast to the new one).
+    if (!source_column_type_overrides.empty())
+        return;
+
+    const auto part = source.getMergeTreeDataPart();
+    if (!part)
+        return;
+
+    for (const auto & command : commands)
+    {
+        if (command.type != MutationCommand::UPDATE)
+            continue;
+
+        auto alter = command.ast();
+        if (!alter)
+            continue;
+
+        for (const auto & [column_name, _] : getColumnToUpdateExpression(*alter))
+        {
+            auto part_column = part->tryGetColumn(column_name);
+            auto meta_column = metadata_snapshot->getColumns().tryGetPhysical(column_name);
+            if (part_column && meta_column && !part_column->type->equals(*meta_column->type))
+                source_column_type_overrides.emplace(column_name, part_column->type);
+        }
+    }
+}
+
+NamesAndTypesList MutationsInterpreter::getColumnsForMutationAnalysis(const StorageSnapshotPtr & storage_snapshot) const
+{
+    auto options = GetColumnsOptions(GetColumnsOptions::AllPhysical).withVirtuals(VirtualsKind::All, VirtualsMaterializationPlace::All);
+    auto all_columns = storage_snapshot->getColumnsByNames(options, available_columns);
+
+    if (source_column_type_overrides.empty())
+        return all_columns;
+
+    for (auto & column : all_columns)
+    {
+        if (auto it = source_column_type_overrides.find(column.name); it != source_column_type_overrides.end())
+            column.type = it->second;
+    }
+    return all_columns;
+}
+
+StorageMetadataPtr MutationsInterpreter::getMetadataSnapshotForReading() const
+{
+    if (source_column_type_overrides.empty())
+        return metadata_snapshot;
+
+    auto meta = std::make_shared<StorageInMemoryMetadata>(*metadata_snapshot);
+    for (const auto & [name, type] : source_column_type_overrides)
+    {
+        if (!meta->columns.has(name))
+            continue;
+        meta->columns.modify(name, [&](ColumnDescription & column) { column.type = type; });
+    }
+    return meta;
 }
 
 static NameSet getKeyColumns(const MutationsInterpreter::Source & source, const StorageMetadataPtr & metadata_snapshot)
@@ -696,15 +759,15 @@ void MutationsInterpreter::prepare(bool dry_run)
     if (commands.empty())
         throw Exception(ErrorCodes::LOGICAL_ERROR, "Empty mutation commands list");
 
+    collectSourceColumnTypeOverrides();
+
     /// TODO Should we get columns, indices and projections from the part itself? Table metadata may be different
     const ColumnsDescription & columns_desc = metadata_snapshot->getColumns();
     const IndicesDescription & indices_desc = metadata_snapshot->getSecondaryIndices();
     const ProjectionsDescription & projections_desc = metadata_snapshot->getProjections();
 
     auto storage_snapshot = std::make_shared<StorageSnapshot>(*source.getStorage(), metadata_snapshot);
-    auto options = GetColumnsOptions(GetColumnsOptions::AllPhysical).withVirtuals(VirtualsKind::All, VirtualsMaterializationPlace::All);
-
-    auto all_columns = storage_snapshot->getColumnsByNames(options, available_columns);
+    auto all_columns = getColumnsForMutationAnalysis(storage_snapshot);
     NameSet available_columns_set(available_columns.begin(), available_columns.end());
 
     NameSet updated_columns;
@@ -1647,10 +1710,9 @@ void MutationsInterpreter::addStageIfNeeded(std::optional<UInt64> mutation_versi
 
 void MutationsInterpreter::prepareMutationStages(std::vector<Stage> & prepared_stages, bool dry_run)
 {
-    auto storage_snapshot = source.getStorageSnapshot(metadata_snapshot, context, settings.can_execute);
-    auto options = GetColumnsOptions(GetColumnsOptions::AllPhysical).withVirtuals(VirtualsKind::All, VirtualsMaterializationPlace::All);
-
-    auto all_columns = storage_snapshot->getColumnsByNames(options, available_columns);
+    /// Use overridden (on-disk) types for fused MODIFY+UPDATE so expression analysis matches the read header.
+    auto storage_snapshot = source.getStorageSnapshot(getMetadataSnapshotForReading(), context, settings.can_execute);
+    auto all_columns = getColumnsForMutationAnalysis(storage_snapshot);
 
     bool has_filters = false;
     /// Next, for each stage calculate columns changed by this and previous stages.
@@ -2320,7 +2382,7 @@ void MutationsInterpreter::initQueryPlan(Stage & first_stage, QueryPlan & plan)
     // TODO(serxa): Enable concurrency control for mutation queries and mutations. This should be done after CPU scheduler introduction.
     plan.setConcurrencyControl(false);
 
-    source.read(first_stage, plan, metadata_snapshot, context, settings);
+    source.read(first_stage, plan, getMetadataSnapshotForReading(), context, settings);
 
     if (first_stage.analyzer)
         addDelayedCreatingSetsStep(plan, first_stage.analyzer->getPreparedSets(), context);

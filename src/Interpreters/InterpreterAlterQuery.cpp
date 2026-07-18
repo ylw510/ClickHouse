@@ -255,6 +255,91 @@ void validateReplicatedDatabaseSegments(const CommandSegments & segments, const 
                     "to execute ALTERs of different types (replicated and non replicated) in single query");
 }
 
+/// Fold `MODIFY COLUMN` (and other metadata alters) with `UPDATE` from the same ALTER into one
+/// AlterCommands segment so they share a single metadata commit + mutation (see #108720).
+void tryFuseModifyColumnWithUpdate(CommandSegments & segments)
+{
+    if (segments.size() < 2)
+        return;
+
+    AlterCommands fused_alters;
+    MutationCommands fused_updates;
+
+    for (auto & segment : segments)
+    {
+        if (auto * alters = std::get_if<AlterCommands>(&segment))
+        {
+            if (alters->hasFusedMutationCommands())
+                return;
+
+            for (auto & cmd : *alters)
+                fused_alters.push_back(std::move(cmd));
+        }
+        else if (auto * mutations = std::get_if<MutationCommands>(&segment))
+        {
+            if (mutations->empty())
+                continue;
+
+            if (!mutations->hasOnlyUpdateCommands())
+                return;
+
+            for (auto & cmd : *mutations)
+                fused_updates.push_back(std::move(cmd));
+        }
+        else
+        {
+            /// Partition / Execute commands cannot be fused with MODIFY+UPDATE.
+            return;
+        }
+    }
+
+    if (fused_alters.empty() || fused_updates.empty())
+        return;
+
+    fused_alters.fused_mutation_commands = std::move(fused_updates);
+    segments.clear();
+    segments.emplace_back(std::move(fused_alters));
+}
+
+void validateFusedMutationCommands(const AlterCommands & alter_commands, const StoragePtr & table, const ContextPtr & context)
+{
+    if (!alter_commands.hasFusedMutationCommands())
+        return;
+
+    /// Commands must already be prepared by the caller.
+    auto old_metadata = table->getInMemoryMetadataPtr(context, true);
+    StorageInMemoryMetadata new_metadata = *old_metadata;
+    alter_commands.apply(new_metadata, context);
+
+    MutationsInterpreter::Settings mutation_settings(false);
+    for (const auto & command : alter_commands)
+    {
+        if (command.type != AlterCommand::MODIFY_COLUMN || !command.data_type)
+            continue;
+        if (!alter_commands.getFusedUpdatedColumns().contains(command.column_name))
+            continue;
+        if (!old_metadata->getColumns().has(command.column_name))
+            continue;
+
+        mutation_settings.source_column_type_overrides.emplace(
+            command.column_name, old_metadata->getColumns().getPhysical(command.column_name).type);
+    }
+
+    MutationsInterpreter::validateNonDeterministicMutationsForStorage(
+        table, alter_commands.fused_mutation_commands, context);
+
+    if (context->getSettingsRef()[Setting::validate_mutation_query])
+    {
+        MutationsInterpreter(
+            table,
+            std::make_shared<StorageInMemoryMetadata>(std::move(new_metadata)),
+            alter_commands.fused_mutation_commands,
+            context,
+            mutation_settings)
+            .validate();
+    }
+}
+
 std::optional<BlockIO> tryRewriteToLightweightUpdate(CommandSegments & segments, const StoragePtr & table, const ContextPtr & context, const ASTPtr & query_ptr)
 {
     bool has_update_commands = false;
@@ -322,6 +407,7 @@ BlockIO runCommandSegments(CommandSegments & segments, const StoragePtr & table,
                 share_nested = (*merge_tree->getSettings())[MergeTreeSetting::share_nested_offsets];
 
             alter_commands->prepare(*metadata_snapshot, share_nested);
+            validateFusedMutationCommands(*alter_commands, table, context);
             table->checkAlterIsPossible(*alter_commands, context);
             table->alter(*alter_commands, context, alter_lock);
         }
@@ -481,6 +567,7 @@ BlockIO InterpreterAlterQuery::executeToTable(const ASTAlterQuery & alter)
     auto segments = parseAlterCommandSegments(alter, table, getContext());
     validateSegmentsCombination(segments);
     validateMutationsAllowed(segments, database, getContext());
+    tryFuseModifyColumnWithUpdate(segments);
     validateReplicatedDatabaseSegments(segments, database);
 
     if (auto lightweight_result = tryRewriteToLightweightUpdate(segments, table, getContext(), query_ptr))

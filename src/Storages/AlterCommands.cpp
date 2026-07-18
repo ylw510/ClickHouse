@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <Compression/CompressionFactory.h>
 #include <Core/Settings.h>
 #include <DataTypes/DataTypeArray.h>
@@ -2083,17 +2084,29 @@ bool AlterCommands::hasNonReplicatedAlterCommand() const
 
 bool AlterCommands::areNonReplicatedAlterCommands() const
 {
+    /// Fused UPDATEs must go through the mutation-capable alter path.
+    if (!fused_mutation_commands.empty())
+        return false;
     return std::all_of(begin(), end(), [](const AlterCommand & c) { return c.isSettingsAlter() || c.isCommentAlter(); });
 }
 
 bool AlterCommands::isSettingsAlter() const
 {
+    if (!fused_mutation_commands.empty())
+        return false;
     return std::all_of(begin(), end(), [](const AlterCommand & c) { return c.isSettingsAlter(); });
 }
 
 bool AlterCommands::isCommentAlter() const
 {
+    if (!fused_mutation_commands.empty())
+        return false;
     return std::all_of(begin(), end(), [](const AlterCommand & c) { return c.isCommentAlter(); });
+}
+
+NameSet AlterCommands::getFusedUpdatedColumns() const
+{
+    return fused_mutation_commands.getAllUpdatedColumns();
 }
 
 static MutationCommand createMaterializeTTLCommand()
@@ -2150,6 +2163,48 @@ MutationCommands AlterCommands::getMutationCommands(StorageInMemoryMetadata meta
                 result.push_back(createMaterializeTTLCommand());
                 break;
             }
+        }
+    }
+
+    /// Fuse MODIFY COLUMN + UPDATE from the same ALTER: drop READ_COLUMN for columns
+    /// the UPDATE overwrites (expression rewrite replaces cast), and append UPDATEs.
+    /// `data_type` on those UPDATEs marks a type-changing alter mutation for on-fly tracking.
+    if (!fused_mutation_commands.empty())
+    {
+        const NameSet fused_columns = fused_mutation_commands.getAllUpdatedColumns();
+
+        std::unordered_map<String, DataTypePtr> read_column_types;
+        for (const auto & cmd : result)
+        {
+            if (cmd.type == MutationCommand::READ_COLUMN && cmd.data_type && fused_columns.contains(cmd.column_name))
+                read_column_types.emplace(cmd.column_name, cmd.data_type);
+        }
+
+        std::erase_if(
+            result,
+            [&](const MutationCommand & cmd)
+            {
+                return cmd.type == MutationCommand::READ_COLUMN && fused_columns.contains(cmd.column_name);
+            });
+
+        for (auto fused_cmd : fused_mutation_commands)
+        {
+            if (fused_cmd.type == MutationCommand::UPDATE)
+            {
+                if (auto alter = fused_cmd.ast())
+                {
+                    for (const auto & [column_name, _] : getColumnToUpdateExpression(*alter))
+                    {
+                        if (auto it = read_column_types.find(column_name); it != read_column_types.end())
+                        {
+                            fused_cmd.data_type = it->second;
+                            fused_cmd.column_name = column_name;
+                            break;
+                        }
+                    }
+                }
+            }
+            result.push_back(std::move(fused_cmd));
         }
     }
 

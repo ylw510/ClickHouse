@@ -80,6 +80,9 @@ public:
         bool recalculate_dependencies_of_updated_columns = true;
         /// Number of threads for resulting pipeline.
         size_t max_threads = 1;
+        /// For fused `MODIFY COLUMN` + `UPDATE`: analyze/read these columns using the given
+        /// (old/on-disk) types while still casting UPDATE results to the types in metadata_snapshot.
+        std::unordered_map<String, DataTypePtr> source_column_type_overrides;
     };
 
     /// Storage to mutate, array of mutations commands and context. If you really want to execute mutation
@@ -217,11 +220,17 @@ private:
     std::optional<SortDescription> getStorageSortDescriptionIfPossible(const Block & header) const;
     static std::optional<ActionsDAG> createFilterDAGForStage(const Stage & stage);
 
+    /// Apply source_column_type_overrides (and auto-detect from part when mutating).
+    void collectSourceColumnTypeOverrides();
+    NamesAndTypesList getColumnsForMutationAnalysis(const StorageSnapshotPtr & storage_snapshot) const;
+    StorageMetadataPtr getMetadataSnapshotForReading() const;
+
     ASTPtr getPartitionAndPredicateExpressionForMutationCommand(const ASTAlterCommand * alter) const;
 
     Source source;
     StorageMetadataPtr metadata_snapshot;
     MutationCommands commands;
+    std::unordered_map<String, DataTypePtr> source_column_type_overrides;
 
     /// List of columns in table or in data part that can be updated by mutation.
     /// If mutation affects all columns (e.g. DELETE), all of this columns

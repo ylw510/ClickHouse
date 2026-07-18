@@ -173,6 +173,16 @@ If the `IF EXISTS` clause is specified, the query won't return an error if the c
 
 When changing the type, values are converted as if the [toType](/reference/functions/regular-functions/type-conversion-functions) functions were applied to them. If only the default expression is changed, the query does not do anything complex, and is completed almost instantly.
 
+If the column is not trivially convertible, you can combine `MODIFY COLUMN` with [`UPDATE`](/reference/statements/alter/update) in the same `ALTER` so the new values are computed from an expression of the previous value (and optionally other columns). Metadata is updated once and a single mutation rewrites the data:
+
+```sql
+ALTER TABLE t
+    MODIFY COLUMN amount UInt64,
+    UPDATE amount = toUInt64OrZero(amount) WHERE 1;
+```
+
+The `UPDATE` expression is evaluated against the column's previous type; its result is stored as the new type. Rows not matched by `WHERE` still require a valid cast from the old type to the new type.
+
 Example:
 
 ```sql

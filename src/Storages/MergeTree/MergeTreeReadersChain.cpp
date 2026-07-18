@@ -244,9 +244,16 @@ static NameSet collectColumnsConsumedByChainActions(const RangeReaders & range_r
 
         /// First reference wins across steps; within a step a genuine consume wins over the
         /// overwrite, so `UPDATE col = f(col)` forces `col` to its post-`MODIFY` type.
+        /// Fused MODIFY+UPDATE (`read_overwritten_as_storage_types`) builds the DAG against
+        /// on-disk types, so a self-read must keep the column unconverted.
         for (const auto & col : consumed_here)
-            if (decided.insert(col).second)
-                must_convert.insert(col);
+        {
+            if (!decided.insert(col).second)
+                continue;
+            if (prewhere_info->read_overwritten_as_storage_types && overwritten_here.contains(col))
+                continue;
+            must_convert.insert(col);
+        }
         for (const auto & col : overwritten_here)
             decided.insert(col);
     }

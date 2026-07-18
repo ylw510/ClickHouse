@@ -217,6 +217,14 @@ void AlterConversions::addMutationCommand(const MutationCommand & command, const
                 all_updated_columns.insert(child->as<ASTAssignment &>().column_name);
         }
 
+        /// Fused MODIFY COLUMN + UPDATE stores the new type on the UPDATE command so on-fly
+        /// tracking treats it like READ_COLUMN (version_of_alter_mutation / skip indexes).
+        if (command.type == UPDATE && command.data_type)
+        {
+            ++number_of_alter_mutations;
+            version_of_alter_mutation = command.mutation_version;
+        }
+
         mutation_commands.push_back(command);
     }
 }
@@ -385,6 +393,10 @@ PrewhereExprSteps AlterConversions::getMutationSteps(
         /// For mutations before ALTER MODIFY we should not apply conversions
         /// because correctness of ALTER MODIFY may depend on the result of mutation.
         bool perform_alter_conversions = !version_of_alter_mutation || actions.mutation_version > version_of_alter_mutation;
+        /// The alter mutation itself (including fused MODIFY+UPDATE) must read overwritten
+        /// columns as on-disk types; the UPDATE DAG was built against those types.
+        bool read_overwritten_as_storage_types
+            = version_of_alter_mutation.has_value() && actions.mutation_version == version_of_alter_mutation;
         bool is_filter = !actions.filter_column_name.empty();
 
         PrewhereExprStep step
@@ -396,6 +408,7 @@ PrewhereExprSteps AlterConversions::getMutationSteps(
             .need_filter = is_filter,
             .perform_alter_conversions = perform_alter_conversions,
             .columns_overwritten_by_chain = perform_alter_conversions ? NameSet{} : columns_overwritten_by_chain,
+            .read_overwritten_as_storage_types = read_overwritten_as_storage_types,
             .mutation_version = actions.mutation_version,
         };
 

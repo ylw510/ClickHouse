@@ -21,6 +21,8 @@ The `filter_expr` must be of type `UInt8`. This query updates values of specifie
 
 One query can contain several commands separated by commas.
 
+You can combine `UPDATE` with [`MODIFY COLUMN`](/sql-reference/statements/alter/column.md/#modify-column) in the same `ALTER` when the column type changes and values must be computed from an expression of the previous type (they are applied atomically as one mutation).
+
 The synchronicity of the query processing is defined by the [mutations_sync](/operations/settings/settings.md/#mutations_sync) setting. By default, it is asynchronous.
 
 **See also**

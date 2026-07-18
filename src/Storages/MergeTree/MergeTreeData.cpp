@@ -5136,7 +5136,10 @@ void MergeTreeData::checkAlterIsPossible(const AlterCommands & commands, Context
 
                 if (old_metadata.getColumns().has(command.column_name))
                 {
-                    columns_to_check_conversion.push_back(new_metadata.getColumns().getPhysical(command.column_name));
+                    /// Columns rewritten by a fused UPDATE in the same ALTER are not cast;
+                    /// the UPDATE expression produces the new-typed values instead.
+                    if (!commands.getFusedUpdatedColumns().contains(command.column_name))
+                        columns_to_check_conversion.push_back(new_metadata.getColumns().getPhysical(command.column_name));
                 }
             }
         }

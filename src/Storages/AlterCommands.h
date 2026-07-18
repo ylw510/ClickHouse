@@ -237,13 +237,27 @@ public:
     /// alter. If alter can be performed as pure metadata update, than result is
     /// empty. If some TTL changes happened than, depending on materialize_ttl
     /// additional mutation command (MATERIALIZE_TTL) will be returned.
+    ///
+    /// When `fused_mutation_commands` is set (see InterpreterAlterQuery fuse of
+    /// `MODIFY COLUMN` + `UPDATE` in one ALTER), `READ_COLUMN` is omitted for
+    /// columns overwritten by those UPDATEs and the UPDATE commands are appended
+    /// so metadata commit and value rewrite share one mutation.
     MutationCommands getMutationCommands(StorageInMemoryMetadata metadata, bool materialize_ttl, ContextPtr context, bool with_alters=false) const;
+
+    /// Columns assigned by `fused_mutation_commands` (empty if none were fused).
+    NameSet getFusedUpdatedColumns() const;
+
+    bool hasFusedMutationCommands() const { return !fused_mutation_commands.empty(); }
 
     /// Check if commands have a text index
     static bool hasTextIndex(const StorageInMemoryMetadata & metadata);
 
     /// Check if commands have any vector similarity index
     static bool hasVectorSimilarityIndex(const StorageInMemoryMetadata & metadata);
+
+    /// UPDATE commands fused into this ALTER (same statement as MODIFY COLUMN).
+    /// Empty means no fusion; filled by InterpreterAlterQuery before execution.
+    MutationCommands fused_mutation_commands;
 };
 
 }

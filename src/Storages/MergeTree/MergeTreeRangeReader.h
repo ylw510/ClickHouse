@@ -49,6 +49,10 @@ struct PrewhereExprStep
     /// for usage. Empty when `perform_alter_conversions == true`.
     NameSet columns_overwritten_by_chain;
 
+    /// When true, overwritten columns are left in on-disk types even if the step's DAG
+    /// consumes them (fused MODIFY COLUMN + UPDATE: expression is typed against storage types).
+    bool read_overwritten_as_storage_types = false;
+
     /// Version of mutation if step is a part of on-fly mutation.
     std::optional<UInt64> mutation_version;
 };
