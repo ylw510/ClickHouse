@@ -3,6 +3,7 @@
 #if USE_ARROW
 
 #include <Processors/Formats/Impl/ArrowIPC/BufferCompression.h>
+#include <Processors/Formats/Impl/ParquetVariantToJSON.h>
 #include <IO/NetUtils.h>
 #include <Columns/ColumnVector.h>
 #include <Columns/ColumnDecimal.h>
@@ -13,6 +14,7 @@
 #include <Columns/ColumnTuple.h>
 #include <Columns/ColumnMap.h>
 #include <Columns/ColumnVariant.h>
+#include <Columns/ColumnObject.h>
 #include <Columns/ColumnLowCardinality.h>
 #include <Columns/ColumnNothing.h>
 #include <Columns/ColumnsNumber.h>
@@ -22,7 +24,10 @@
 #include <DataTypes/DataTypeArray.h>
 #include <DataTypes/DataTypeTuple.h>
 #include <DataTypes/DataTypeMap.h>
+#include <DataTypes/DataTypeObject.h>
 #include <DataTypes/IDataType.h>
+#include <DataTypes/Serializations/ISerialization.h>
+#include <IO/ReadBufferFromMemory.h>
 #include <Common/assert_cast.h>
 #include <Common/FloatUtils.h>
 #include <Common/DateLUTImpl.h>
@@ -502,7 +507,6 @@ ColumnPtr RecordBatchDecoder::decodeInner(const ArrowField & field, size_t rows,
             const bool large = type.kind == TypeKind::LargeUtf8 || type.kind == TypeKind::LargeBinary;
             const Slice offsets_slice = nextBuffer();
             const Slice data_slice = nextBuffer();
-            auto & string_column = assert_cast<ColumnString &>(*column);
             /// A zero-row column may omit its offsets buffer entirely; nothing to decode.
             if (rows == 0)
                 break;
@@ -512,15 +516,49 @@ ColumnPtr RecordBatchDecoder::decodeInner(const ArrowField & field, size_t rows,
             const size_t offset_size = large ? sizeof(Int64) : sizeof(Int32);
             checkBufferSize(offsets_slice, requiredBytes(rows + 1, offset_size), "offsets");
 
-            string_column.reserve(rows);
-            string_column.getChars().reserve(static_cast<size_t>(data_slice.length) + rows);
-
             auto read_offset = [&](size_t i) -> Int64
             {
                 if (large)
                     return reinterpret_cast<const Int64 *>(offsets_slice.ptr)[i];
                 return reinterpret_cast<const Int32 *>(offsets_slice.ptr)[i];
             };
+
+            /// When schema metadata marks this field as `arrow.json`, `fieldToCHType` returns JSON/`Object`
+            /// and the column is `ColumnObject`. Parse each utf8 payload as JSON text.
+            if (auto * object_column = typeid_cast<ColumnObject *>(column.get()))
+            {
+                const auto serialization = inner_type->getDefaultSerialization();
+                object_column->reserve(rows);
+
+                Int64 prev = read_offset(0);
+                if (prev < 0)
+                    throw Exception(ErrorCodes::INCORRECT_DATA, "Arrow IPC string column has a negative first offset {}", prev);
+                for (size_t i = 0; i < rows; ++i)
+                {
+                    const Int64 end = read_offset(i + 1);
+                    if (end < prev || end > data_slice.length)
+                        throw Exception(
+                            ErrorCodes::INCORRECT_DATA,
+                            "Arrow IPC string column has a corrupted offset (prev {}, end {}, data size {})",
+                            prev, end, data_slice.length);
+                    if (end == prev)
+                    {
+                        /// Empty payload is not valid JSON; insert default JSON object.
+                        object_column->insertDefault();
+                    }
+                    else
+                    {
+                        ReadBufferFromMemory rb(data_slice.ptr + prev, static_cast<size_t>(end - prev));
+                        serialization->deserializeTextJSON(*object_column, rb, settings);
+                    }
+                    prev = end;
+                }
+                break;
+            }
+
+            auto & string_column = assert_cast<ColumnString &>(*column);
+            string_column.reserve(rows);
+            string_column.getChars().reserve(static_cast<size_t>(data_slice.length) + rows);
 
             /// A sliced Arrow string array can begin at a non-negative first offset; the value bytes are
             /// read directly from `data[offset[i], offset[i + 1])`, so any base offset works as long as the
@@ -667,6 +705,63 @@ ColumnPtr RecordBatchDecoder::decodeInner(const ArrowField & field, size_t rows,
         {
             if (type.children.empty())
                 return ColumnTuple::create(rows); /// empty Tuple() has no element columns
+
+            /// Unshredded Spark/Parquet Variant → JSON/`ColumnObject`.
+            if (auto * object_column = typeid_cast<ColumnObject *>(column.get());
+                object_column && settings.arrow.enable_json_parsing && isParquetVariantField(field))
+            {
+                const ArrowField * metadata_field = nullptr;
+                const ArrowField * value_field = nullptr;
+                for (const ArrowField & child : type.children)
+                {
+                    if (child.name == "metadata")
+                        metadata_field = &child;
+                    else if (child.name == "value")
+                        value_field = &child;
+                }
+                if (!metadata_field || !value_field)
+                    throw Exception(ErrorCodes::INCORRECT_DATA, "Parquet Variant struct is missing metadata/value fields");
+
+                if (rows == 0)
+                {
+                    for (const ArrowField * child : {metadata_field, value_field})
+                    {
+                        const Int64 field_len = peekNextNodeLength();
+                        if (field_len != 0)
+                            throw Exception(
+                                ErrorCodes::INCORRECT_DATA,
+                                "Arrow IPC empty variant field '{}' declares {} rows", child->name, field_len);
+                    }
+                }
+
+                ColumnPtr metadata_col = decodeField(
+                    *metadata_field, /*allow_low_cardinality=*/false, /*target_hint=*/nullptr, child_path(metadata_field->name));
+                ColumnPtr value_col = decodeField(
+                    *value_field, /*allow_low_cardinality=*/false, /*target_hint=*/nullptr, child_path(value_field->name));
+                if (metadata_col->size() != rows || value_col->size() != rows)
+                    throw Exception(
+                        ErrorCodes::INCORRECT_DATA,
+                        "Arrow IPC Parquet Variant children have mismatched row counts (metadata {}, value {}, expected {})",
+                        metadata_col->size(), value_col->size(), rows);
+
+                const auto * metadata_string = typeid_cast<const ColumnString *>(metadata_col.get());
+                const auto * value_string = typeid_cast<const ColumnString *>(value_col.get());
+                if (!metadata_string || !value_string)
+                    throw Exception(
+                        ErrorCodes::INCORRECT_DATA,
+                        "Arrow IPC Parquet Variant metadata/value must decode as String columns");
+
+                const auto serialization = inner_type->getDefaultSerialization();
+                object_column->reserve(rows);
+                for (size_t i = 0; i < rows; ++i)
+                {
+                    const String json = decodeParquetVariantToJSON(metadata_string->getDataAt(i), value_string->getDataAt(i));
+                    ReadBufferFromMemory rb(json.data(), json.size());
+                    serialization->deserializeTextJSON(*object_column, rb, settings);
+                }
+                return column;
+            }
+
             Columns elements;
             elements.reserve(type.children.size());
             for (size_t i = 0; i < type.children.size(); ++i)
@@ -1182,7 +1277,10 @@ ColumnPtr RecordBatchDecoder::decodeField(
     const DataTypePtr effective_hint = resolveTargetHint(target_hint, path);
     const bool nullable_tuple_allowed = settings.schema_inference_allow_nullable_tuple_type
         || (effective_hint && (effective_hint->isNullable() || effective_hint->isLowCardinalityNullable()));
-    const bool struct_not_allowed_nullable = field.type.kind == TypeKind::Struct && !nullable_tuple_allowed;
+    /// Variant→JSON produces `Object`/`Nullable(Object)`, which is nullable even when generic
+    /// `Nullable(Tuple)` is disabled.
+    const bool variant_json = settings.arrow.enable_json_parsing && isParquetVariantField(field);
+    const bool struct_not_allowed_nullable = field.type.kind == TypeKind::Struct && !nullable_tuple_allowed && !variant_json;
     if (field.nullable && inner->canBeInsideNullable() && !struct_not_allowed_nullable)
     {
         ColumnPtr null_map = buildNullMap(validity, rows, node.null_count());

@@ -12,6 +12,7 @@
 #include <Columns/ColumnLowCardinality.h>
 #include <Columns/ColumnMap.h>
 #include <Columns/ColumnVariant.h>
+#include <Columns/ColumnObject.h>
 #include <Common/DateLUTImpl.h>
 #include <Core/callOnTypeIndex.h>
 #include <DataTypes/DataTypeNullable.h>
@@ -23,9 +24,13 @@
 #include <DataTypes/DataTypeDateTime64.h>
 #include <DataTypes/DataTypeFixedString.h>
 #include <DataTypes/DataTypeVariant.h>
+#include <DataTypes/DataTypeObject.h>
 #include <DataTypes/DataTypeInterval.h>
 #include <Common/IntervalKind.h>
 #include <DataTypes/DataTypeUUID.h>
+#include <DataTypes/Serializations/ISerialization.h>
+#include <IO/WriteBufferFromOwnString.h>
+#include <Formats/FormatSettings.h>
 #include <Processors/Formats/IOutputFormat.h>
 #include <Processors/Formats/Impl/ArrowBufferedStreams.h>
 #include <Processors/Port.h>
@@ -112,6 +117,38 @@ namespace DB
             const std::string& /* serialized_data */) const override
         {
             return std::make_shared<ArrowUUIDExtensionType>();
+        }
+
+        std::string Serialize() const override { return ""; }
+    };
+
+    /// Canonical Arrow JSON extension over utf8 storage (https://arrow.apache.org/docs/format/CanonicalExtensions.html#json).
+    class ArrowJSONExtensionType : public arrow::ExtensionType
+    {
+    public:
+        explicit ArrowJSONExtensionType(std::shared_ptr<arrow::DataType> storage = arrow::utf8())
+            : arrow::ExtensionType(std::move(storage))
+        {
+        }
+
+        std::string extension_name() const override { return "arrow.json"; }
+
+        bool ExtensionEquals(const arrow::ExtensionType & other) const override
+        {
+            return other.extension_name() == this->extension_name()
+                && other.storage_type()->Equals(storage_type());
+        }
+
+        std::shared_ptr<arrow::Array> MakeArray(std::shared_ptr<arrow::ArrayData> data) const override
+        {
+            return std::make_shared<arrow::ExtensionArray>(data);
+        }
+
+        arrow::Result<std::shared_ptr<arrow::DataType>> Deserialize(
+            std::shared_ptr<arrow::DataType> storage_type,
+            const std::string & /* serialized_data */) const override
+        {
+            return std::make_shared<ArrowJSONExtensionType>(std::move(storage_type));
         }
 
         std::string Serialize() const override { return ""; }
@@ -973,6 +1010,38 @@ namespace DB
         throw Exception(ErrorCodes::LOGICAL_ERROR, "Cannot fill arrow array {} with {} data", value_type->name(), column_type->getName());
     }
 
+    static void fillArrowArrayWithJSONColumnData(
+        ColumnPtr write_column,
+        const DataTypePtr & column_type,
+        const PaddedPODArray<UInt8> * null_bytemap,
+        const String & format_name,
+        arrow::ArrayBuilder * array_builder,
+        size_t start,
+        size_t end)
+    {
+        const auto & object_column = assert_cast<const ColumnObject &>(*write_column);
+        auto & builder = assert_cast<arrow::StringBuilder &>(*array_builder);
+        const auto serialization = column_type->getDefaultSerialization();
+        FormatSettings format_settings;
+
+        for (size_t row_i = start; row_i < end; ++row_i)
+        {
+            arrow::Status status;
+            if (null_bytemap && (*null_bytemap)[row_i])
+            {
+                status = builder.AppendNull();
+            }
+            else
+            {
+                WriteBufferFromOwnString wb;
+                serialization->serializeTextJSON(object_column, row_i, wb, format_settings);
+                const auto & s = wb.str();
+                status = builder.Append(s.data(), static_cast<int>(s.size()));
+            }
+            checkStatus(status, write_column->getName(), format_name);
+        }
+    }
+
     template <typename ColumnType, typename ArrowBuilder>
     static void fillArrowArrayWithStringColumnData(
         ColumnPtr write_column,
@@ -1425,6 +1494,9 @@ namespace DB
             case TypeIndex::UUID:
                 fillArrowArrayWithUUIDColumnData(column, null_bytemap, format_name, array_builder, start, end);
                 break;
+            case TypeIndex::Object:
+                fillArrowArrayWithJSONColumnData(column, column_type, null_bytemap, format_name, array_builder, start, end);
+                break;
 #define DISPATCH(CPP_NUMERIC_TYPE, ARROW_BUILDER_TYPE) \
             case TypeIndex::CPP_NUMERIC_TYPE: \
                 fillArrowArrayWithNumericColumnData<CPP_NUMERIC_TYPE, ARROW_BUILDER_TYPE>(column, null_bytemap, format_name, array_builder, start, end); \
@@ -1726,6 +1798,9 @@ namespace DB
         if (isUUID(column_type))
             return for_builder ? arrow::fixed_size_binary(sizeof(UUID)) : std::make_shared<ArrowUUIDExtensionType>();
 
+        if (isObject(column_type))
+            return for_builder ? arrow::utf8() : std::make_shared<ArrowJSONExtensionType>(arrow::utf8());
+
         if (isDate(column_type) && settings.output_date_as_uint16)
             return arrow::uint16();
 
@@ -1797,6 +1872,16 @@ namespace DB
                 auto ext_metadata = arrow::key_value_metadata(
                     {"ARROW:extension:name", "ARROW:extension:metadata", "PARQUET:logical_type"},
                     {"arrow.uuid", "", "UUID"}
+                );
+                field_metadata = field_metadata ? field_metadata->Merge(*ext_metadata) : ext_metadata;
+            }
+
+            // Inject arrow.json metadata for JSON/Object columns
+            if (isObject(removeNullable(header_column.type)))
+            {
+                auto ext_metadata = arrow::key_value_metadata(
+                    {"ARROW:extension:name", "ARROW:extension:metadata", "PARQUET:logical_type"},
+                    {"arrow.json", "", "JSON"}
                 );
                 field_metadata = field_metadata ? field_metadata->Merge(*ext_metadata) : ext_metadata;
             }

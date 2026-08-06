@@ -196,6 +196,9 @@ struct FormatSettings
         ArrowCompression output_compression_method = ArrowCompression::NONE;
         bool output_date_as_uint16 = false;
         bool output_unsupported_types_as_binary = true;
+        /// When true, Arrow/ArrowStream columns marked as `arrow.json` (or Parquet logical JSON)
+        /// are parsed into ClickHouse JSON columns. When false they are read as String.
+        bool enable_json_parsing = true;
     } arrow{};
 
     struct AvroSchemaRegistryTimeouts

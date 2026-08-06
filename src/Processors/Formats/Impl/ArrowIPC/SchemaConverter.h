@@ -142,6 +142,10 @@ ArrowSchema parseSchema(const flatbuf::Schema & schema);
 
 /// Whether a fixed_size_binary(16) field is flagged as the Arrow UUID extension type.
 bool isUUIDField(const ArrowField & field);
+bool isJSONField(const ArrowField & field);
+/// Unshredded Spark/Parquet Variant (`arrow.parquet.variant` / `parquet.variant`, or
+/// struct{metadata,value} binaries).
+bool isParquetVariantField(const ArrowField & field);
 
 /// A record-batch / dictionary-batch location inside an Arrow file.
 struct ArrowFileBlock

@@ -13,6 +13,7 @@
 #include <Columns/ColumnMap.h>
 #include <Columns/ColumnConst.h>
 #include <Columns/ColumnVariant.h>
+#include <Columns/ColumnObject.h>
 #include <Columns/ColumnsNumber.h>
 #include <DataTypes/DataTypeArray.h>
 #include <DataTypes/DataTypeTuple.h>
@@ -22,7 +23,11 @@
 #include <DataTypes/DataTypeNullable.h>
 #include <DataTypes/DataTypeLowCardinality.h>
 #include <DataTypes/DataTypeVariant.h>
+#include <DataTypes/DataTypeObject.h>
 #include <DataTypes/IDataType.h>
+#include <DataTypes/Serializations/ISerialization.h>
+#include <Formats/FormatSettings.h>
+#include <IO/WriteBufferFromOwnString.h>
 #include <IO/NetUtils.h>
 #include <Core/UUID.h>
 #include <Common/assert_cast.h>
@@ -334,6 +339,39 @@ void RecordBatchEncoder::encodeValues(
                     data.resize(old + len);
                     if (len)
                         memcpy(data.data() + old, &chars[start], len);
+                }
+                arrow_offsets[i + 1] = static_cast<Int32>(cur);
+            }
+            appendBuffer(arrow_offsets.data(), (num_rows + 1) * sizeof(Int32));
+            appendBuffer(data.data(), data.size());
+            return;
+        }
+        case TypeIndex::Object:
+        {
+            /// Serialize JSON rows as utf8 (schema carries `arrow.json` extension metadata).
+            const auto & object_column = assert_cast<const ColumnObject &>(column);
+            const auto serialization = type->getDefaultSerialization();
+            FormatSettings format_settings;
+            const NullMap * null_map
+                = null_map_column ? &assert_cast<const ColumnUInt8 &>(*null_map_column).getData() : nullptr;
+            PODArray<Int32> arrow_offsets(num_rows + 1);
+            PODArray<char> data;
+            arrow_offsets[0] = 0;
+            Int64 cur = 0;
+            for (size_t i = 0; i < num_rows; ++i)
+            {
+                if (!(null_map && (*null_map)[i]))
+                {
+                    WriteBufferFromOwnString wb;
+                    serialization->serializeTextJSON(object_column, i, wb, format_settings);
+                    const auto & s = wb.str();
+                    cur += static_cast<Int64>(s.size());
+                    if (cur > std::numeric_limits<Int32>::max())
+                        throw Exception(ErrorCodes::TOO_LARGE_ARRAY_SIZE, "Arrow IPC string offset exceeds 32 bits");
+                    const size_t old = data.size();
+                    data.resize(old + s.size());
+                    if (!s.empty())
+                        memcpy(data.data() + old, s.data(), s.size());
                 }
                 arrow_offsets[i + 1] = static_cast<Int32>(cur);
             }

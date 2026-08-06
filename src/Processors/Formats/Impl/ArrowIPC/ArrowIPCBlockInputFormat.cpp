@@ -1230,6 +1230,7 @@ cat forex_eurusd.arrow | clickhouse-client --query="INSERT INTO some_table FORMA
 |--------------------------------------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------|--------------|
 | `input_format_arrow_allow_missing_columns`                                                                               | Allow missing columns while reading Arrow input formats                                            | `1`          |
 | `input_format_arrow_case_insensitive_column_matching`                                                                    | Ignore case when matching Arrow columns with CH columns.                                           | `0`          |
+| `input_format_arrow_enable_json_parsing`                                                                                 | Parse Arrow columns with the `arrow.json` extension (or Parquet logical JSON / unshredded `arrow.parquet.variant`) as ClickHouse JSON columns. | `1`          |
 | `input_format_arrow_import_nested`                                                                                       | Obsolete setting, does nothing.                                                                    | `0`          |
 | `input_format_arrow_skip_columns_with_unsupported_types_in_schema_inference`                                             | Skip columns with unsupported types while schema inference for format Arrow                        | `0`          |
 | `output_format_arrow_compression_method`                                                                                 | Compression method for Arrow output format. Supported codecs: lz4_frame, zstd, none (uncompressed) | `lz4_frame`  |
@@ -1363,6 +1364,7 @@ the blog post
 |------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------|-------------|
 | `input_format_arrow_allow_missing_columns`                                   | Allow missing columns while reading Arrow input formats                                                                                    | `1`         |
 | `input_format_arrow_case_insensitive_column_matching`                        | Ignore case when matching Arrow columns with CH columns.                                                                                   | `0`         |
+| `input_format_arrow_enable_json_parsing`                                     | Parse Arrow columns with the `arrow.json` extension (or Parquet logical JSON / unshredded `arrow.parquet.variant`) as ClickHouse JSON columns. | `1`         |
 | `input_format_arrow_import_nested`                                           | Obsolete setting, does nothing.                                                                                                            | `0`         |
 | `input_format_arrow_skip_columns_with_unsupported_types_in_schema_inference` | Skip columns with unsupported types while schema inference for format Arrow                                                                | `0`         |
 | `output_format_arrow_compression_method`                                     | Compression method for Arrow output format. Supported codecs: lz4_frame, zstd, none (uncompressed)                                         | `lz4_frame` |
@@ -1390,11 +1392,12 @@ void registerArrowSchemaReader(FormatFactory & factory)
     {
         return fmt::format(
             "schema_inference_make_columns_nullable={};schema_inference_allow_nullable_tuple_type={};"
-            "skip_columns_with_unsupported_types={};allow_geoparquet_parser={}",
+            "skip_columns_with_unsupported_types={};allow_geoparquet_parser={};enable_json_parsing={}",
             settings.schema_inference_make_columns_nullable,
             settings.schema_inference_allow_nullable_tuple_type,
             settings.arrow.skip_columns_with_unsupported_types_in_schema_inference,
-            settings.parquet.allow_geoparquet_parser);
+            settings.parquet.allow_geoparquet_parser,
+            settings.arrow.enable_json_parsing);
     });
     factory.registerSchemaReader(
         "ArrowStream",
@@ -1407,11 +1410,12 @@ void registerArrowSchemaReader(FormatFactory & factory)
     {
         return fmt::format(
             "schema_inference_make_columns_nullable={};schema_inference_allow_nullable_tuple_type={};"
-            "skip_columns_with_unsupported_types={};allow_geoparquet_parser={}",
+            "skip_columns_with_unsupported_types={};allow_geoparquet_parser={};enable_json_parsing={}",
             settings.schema_inference_make_columns_nullable,
             settings.schema_inference_allow_nullable_tuple_type,
             settings.arrow.skip_columns_with_unsupported_types_in_schema_inference,
-            settings.parquet.allow_geoparquet_parser);
+            settings.parquet.allow_geoparquet_parser,
+            settings.arrow.enable_json_parsing);
     });
 }
 

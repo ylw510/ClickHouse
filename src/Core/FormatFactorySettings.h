@@ -210,6 +210,9 @@ When reading Parquet files (with reader v3), skip whole row groups based on the 
     DECLARE(Bool, input_format_parquet_enable_json_parsing, true, R"(
 When reading Parquet files, parse JSON columns as ClickHouse JSON Column.
 )", 0) \
+    DECLARE(Bool, input_format_arrow_enable_json_parsing, true, R"(
+When reading Arrow/ArrowStream, parse columns with the `arrow.json` extension (or Parquet logical JSON metadata) as ClickHouse JSON columns. Also enables decoding unshredded Spark/Parquet Variant (`arrow.parquet.variant`) into JSON.
+)", 0) \
     DECLARE(UInt64, input_format_parquet_memory_low_watermark, 2ul << 20, R"(
 Schedule prefetches more aggressively if memory usage is below than threshold. Potentially useful e.g. if there are many small bloom filters to read over network.
 )", 0) \

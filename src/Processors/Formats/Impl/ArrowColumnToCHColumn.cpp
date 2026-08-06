@@ -3,6 +3,7 @@
 
 #if USE_ARROW || USE_ORC || USE_PARQUET
 
+#include <Processors/Formats/Impl/ParquetVariantToJSON.h>
 #include <DataTypes/DataTypeFactory.h>
 #include <DataTypes/DataTypeNullable.h>
 #include <DataTypes/DataTypesDecimal.h>
@@ -1738,17 +1739,225 @@ static ColumnWithTypeAndName readIPv4ColumnWithInt32Data(const std::shared_ptr<a
     return {std::move(internal_column), std::move(internal_type), column_name};
 }
 
+static bool isArrowJSONField(const arrow::Field & field)
+{
+    if (field.HasMetadata())
+    {
+        auto metadata = field.metadata();
+        auto ext_name = metadata->Get("ARROW:extension:name");
+        if (ext_name.ok() && *ext_name == "arrow.json")
+            return true;
+
+        auto pq_type = metadata->Get("PARQUET:logical_type");
+        if (pq_type.ok() && *pq_type == "JSON")
+            return true;
+    }
+
+    return field.type()->id() == arrow::Type::EXTENSION
+        && std::static_pointer_cast<arrow::ExtensionType>(field.type())->extension_name() == "arrow.json";
+}
+
 static bool isColumnJSON(const std::shared_ptr<arrow::Field> & field, DataTypePtr type_hint)
 {
     if (type_hint && type_hint->getTypeId() == TypeIndex::Object)
         return true;
 
-    if (!field || !field->HasMetadata())
+    if (!field)
         return false;
 
-    const auto & md = field->metadata();
-    auto logical_type = md->Get("PARQUET:logical_type");
-    return logical_type.ok() && *logical_type == "JSON";
+    return isArrowJSONField(*field);
+}
+
+static bool isBinaryLikeArrowType(const std::shared_ptr<arrow::DataType> & type)
+{
+    if (!type)
+        return false;
+    switch (type->id())
+    {
+        case arrow::Type::BINARY:
+        case arrow::Type::STRING:
+        case arrow::Type::LARGE_BINARY:
+        case arrow::Type::LARGE_STRING:
+            return true;
+        default:
+            return false;
+    }
+}
+
+/// Unshredded Spark/Parquet Variant: struct{metadata: binary, value: binary}, optionally as an
+/// Arrow extension (`arrow.parquet.variant` / `parquet.variant`).
+static bool isUnshreddedParquetVariantStruct(const std::shared_ptr<arrow::DataType> & type)
+{
+    if (!type || type->id() != arrow::Type::STRUCT)
+        return false;
+
+    const auto * struct_type = assert_cast<arrow::StructType *>(type.get());
+    if (struct_type->num_fields() != 2)
+        return false;
+
+    int metadata_idx = -1;
+    int value_idx = -1;
+    for (int i = 0; i < struct_type->num_fields(); ++i)
+    {
+        const auto & name = struct_type->field(i)->name();
+        if (name == "metadata")
+            metadata_idx = i;
+        else if (name == "value")
+            value_idx = i;
+    }
+    if (metadata_idx < 0 || value_idx < 0)
+        return false;
+
+    return isBinaryLikeArrowType(struct_type->field(metadata_idx)->type())
+        && isBinaryLikeArrowType(struct_type->field(value_idx)->type());
+}
+
+static bool isArrowParquetVariantField(
+    const std::shared_ptr<arrow::Field> & field,
+    const std::shared_ptr<arrow::DataType> & column_type)
+{
+    auto check_extension_name = [](std::string_view name)
+    {
+        return isArrowParquetVariantExtensionName(name);
+    };
+
+    if (field)
+    {
+        if (field->HasMetadata())
+        {
+            auto ext_name = field->metadata()->Get("ARROW:extension:name");
+            if (ext_name.ok() && check_extension_name(*ext_name))
+                return true;
+        }
+        if (field->type()->id() == arrow::Type::EXTENSION)
+        {
+            const auto & name = std::static_pointer_cast<arrow::ExtensionType>(field->type())->extension_name();
+            if (check_extension_name(name))
+                return true;
+        }
+    }
+
+    auto type = column_type;
+    if (type && type->id() == arrow::Type::EXTENSION)
+    {
+        const auto ext_type = std::static_pointer_cast<arrow::ExtensionType>(type);
+        if (check_extension_name(ext_type->extension_name()))
+            return true;
+        type = ext_type->storage_type();
+    }
+
+    return isUnshreddedParquetVariantStruct(type);
+}
+
+static std::string_view getBinaryLikeArrayView(const arrow::Array & array, int64_t row)
+{
+    switch (array.type_id())
+    {
+        case arrow::Type::BINARY:
+            return assert_cast<const arrow::BinaryArray &>(array).GetView(row);
+        case arrow::Type::STRING:
+            return assert_cast<const arrow::StringArray &>(array).GetView(row);
+        case arrow::Type::LARGE_BINARY:
+            return assert_cast<const arrow::LargeBinaryArray &>(array).GetView(row);
+        case arrow::Type::LARGE_STRING:
+            return assert_cast<const arrow::LargeStringArray &>(array).GetView(row);
+        default:
+            throw Exception(
+                ErrorCodes::INCORRECT_DATA,
+                "Parquet Variant field expected binary/string storage, got {}",
+                array.type()->name());
+    }
+}
+
+static ColumnWithTypeAndName readColumnWithParquetVariantData(
+    const std::shared_ptr<arrow::ChunkedArray> & arrow_column,
+    const String & column_name,
+    DataTypePtr type_hint,
+    bool make_nullable,
+    const FormatSettings & format_settings)
+{
+    auto storage_type = arrow_column->type();
+    if (storage_type->id() == arrow::Type::EXTENSION)
+        storage_type = std::static_pointer_cast<arrow::ExtensionType>(storage_type)->storage_type();
+
+    if (!isUnshreddedParquetVariantStruct(storage_type))
+        throw Exception(
+            ErrorCodes::INCORRECT_DATA,
+            "Column '{}' is marked as Parquet Variant but storage type is not an unshredded "
+            "struct{{metadata, value}}",
+            column_name);
+
+    const auto * struct_type = assert_cast<arrow::StructType *>(storage_type.get());
+    int metadata_idx = 0;
+    int value_idx = 1;
+    if (struct_type->field(0)->name() == "value")
+        std::swap(metadata_idx, value_idx);
+
+    DataTypePtr nested_hint = type_hint ? removeNullable(type_hint) : nullptr;
+    const auto internal_type = nested_hint && nested_hint->getTypeId() == TypeIndex::Object
+        ? nested_hint
+        : std::make_shared<DataTypeObject>(DataTypeObject::SchemaFormat::JSON);
+    const auto serialization = internal_type->getDefaultSerialization();
+
+    auto internal_column = internal_type->createColumn();
+    auto & column_object = assert_cast<ColumnObject &>(*internal_column);
+    column_object.reserve(arrow_column->length());
+
+    ColumnUInt8::MutablePtr null_map;
+    PaddedPODArray<UInt8> * null_bytemap = nullptr;
+    if (make_nullable)
+    {
+        null_map = ColumnUInt8::create();
+        null_bytemap = &null_map->getData();
+        null_bytemap->reserve(arrow_column->length());
+    }
+
+    for (int chunk_i = 0, num_chunks = arrow_column->num_chunks(); chunk_i < num_chunks; ++chunk_i)
+    {
+        std::shared_ptr<arrow::Array> chunk = arrow_column->chunk(chunk_i);
+        if (chunk->type_id() == arrow::Type::EXTENSION)
+            chunk = std::static_pointer_cast<arrow::ExtensionArray>(chunk)->storage();
+
+        const auto & struct_chunk = assert_cast<const arrow::StructArray &>(*chunk);
+        checkValidityBitmap(struct_chunk, column_name);
+        auto metadata_array = struct_chunk.field(metadata_idx);
+        auto value_array = struct_chunk.field(value_idx);
+        checkValidityBitmap(*metadata_array, column_name);
+        checkValidityBitmap(*value_array, column_name);
+
+        for (int64_t row_i = 0; row_i < struct_chunk.length(); ++row_i)
+        {
+            if (struct_chunk.IsNull(row_i))
+            {
+                column_object.insertDefault();
+                if (null_bytemap)
+                    null_bytemap->push_back(1);
+                continue;
+            }
+            if (metadata_array->IsNull(row_i) || value_array->IsNull(row_i))
+                throw Exception(
+                    ErrorCodes::INCORRECT_DATA,
+                    "Parquet Variant column '{}' has null metadata/value in an unshredded row",
+                    column_name);
+
+            const auto metadata_view = getBinaryLikeArrayView(*metadata_array, row_i);
+            const auto value_view = getBinaryLikeArrayView(*value_array, row_i);
+            const String json = decodeParquetVariantToJSON(metadata_view, value_view);
+            ReadBufferFromMemory rb(json.data(), json.size());
+            serialization->deserializeTextJSON(column_object, rb, format_settings);
+            if (null_bytemap)
+                null_bytemap->push_back(0);
+        }
+    }
+
+    if (make_nullable)
+    {
+        auto nullable_type = std::make_shared<DataTypeNullable>(internal_type);
+        auto nullable_column = ColumnNullable::create(std::move(internal_column), std::move(null_map));
+        return {std::move(nullable_column), std::move(nullable_type), column_name};
+    }
+
+    return {std::move(internal_column), internal_type, column_name};
 }
 
 struct ReadColumnFromArrowColumnSettings
@@ -2448,6 +2657,21 @@ static ColumnWithTypeAndName readColumnFromArrowColumn(
     /// This runs for every nested level too, since the function recurses for nested types.
     for (int chunk_i = 0, num_chunks = arrow_column->num_chunks(); chunk_i < num_chunks; ++chunk_i)
         checkValidityBitmap(*arrow_column->chunk(chunk_i), column_name);
+
+    /// Spark/Parquet Variant (`arrow.parquet.variant`) → ClickHouse JSON. Handled before the
+    /// generic STRUCT/EXTENSION paths so unshredded `{metadata,value}` binaries are decoded
+    /// instead of becoming Tuple(String, String). Export of JSON remains `arrow.json` (Phase 1).
+    if (settings.enable_json_parsing && isArrowParquetVariantField(arrow_field, arrow_column->type()))
+    {
+        const bool make_nullable
+            = (arrow_column->null_count() || is_nullable_column
+                  || (type_hint && (type_hint->isNullable() || type_hint->isLowCardinalityNullable())))
+            && settings.allow_inferring_nullable_columns
+            && !(type_hint && !type_hint->isNullable() && !type_hint->isLowCardinalityNullable()
+                 && removeNullable(type_hint)->getTypeId() == TypeIndex::Object);
+        return readColumnWithParquetVariantData(
+            arrow_column, column_name, type_hint, make_nullable, settings.format_settings);
+    }
 
     /// LowCardinality(Nullable(...)) holds nulls inside the dictionary, so canBeInsideNullable() is false; exclude it explicitly.
     bool type_hint_not_nullable_capable = type_hint && !type_hint->isLowCardinalityNullable() && !removeNullable(type_hint)->canBeInsideNullable();

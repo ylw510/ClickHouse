@@ -20,6 +20,7 @@
 #include <DataTypes/DataTypeMap.h>
 #include <DataTypes/DataTypeLowCardinality.h>
 #include <DataTypes/DataTypeVariant.h>
+#include <DataTypes/DataTypeObject.h>
 #include <DataTypes/DataTypeFactory.h>
 #include <Common/DateLUTImpl.h>
 #include <IO/SeekableReadBuffer.h>
@@ -400,6 +401,46 @@ bool isUUIDField(const ArrowField & field)
     return logical != field.custom_metadata.end() && logical->second == "UUID";
 }
 
+bool isJSONField(const ArrowField & field)
+{
+    auto it = field.custom_metadata.find("ARROW:extension:name");
+    if (it != field.custom_metadata.end() && it->second == "arrow.json")
+        return true;
+    auto logical = field.custom_metadata.find("PARQUET:logical_type");
+    return logical != field.custom_metadata.end() && logical->second == "JSON";
+}
+
+bool isParquetVariantField(const ArrowField & field)
+{
+    auto it = field.custom_metadata.find("ARROW:extension:name");
+    if (it != field.custom_metadata.end()
+        && (it->second == "arrow.parquet.variant" || it->second == "parquet.variant"))
+        return true;
+
+    if (field.type.kind != TypeKind::Struct || field.type.children.size() != 2)
+        return false;
+
+    const ArrowField * metadata = nullptr;
+    const ArrowField * value = nullptr;
+    for (const ArrowField & child : field.type.children)
+    {
+        if (child.name == "metadata")
+            metadata = &child;
+        else if (child.name == "value")
+            value = &child;
+    }
+    if (!metadata || !value)
+        return false;
+
+    auto is_binary_like = [](TypeKind kind)
+    {
+        return kind == TypeKind::Binary || kind == TypeKind::Utf8
+            || kind == TypeKind::LargeBinary || kind == TypeKind::LargeUtf8
+            || kind == TypeKind::BinaryView || kind == TypeKind::Utf8View;
+    };
+    return is_binary_like(metadata->type.kind) && is_binary_like(value->type.kind);
+}
+
 namespace
 {
 
@@ -637,6 +678,11 @@ buildField(
                     type_offset = flatbuf::CreateBinary(b).Union();
                 }
                 break;
+            case TypeIndex::Object:
+                /// JSON is written as utf8 with the canonical `arrow.json` extension metadata.
+                type_type = flatbuf::Type_Utf8;
+                type_offset = flatbuf::CreateUtf8(b).Union();
+                break;
             case TypeIndex::FixedString:
                 if (settings.arrow.output_fixed_string_as_fixed_byte_array)
                 {
@@ -762,12 +808,21 @@ buildField(
     }
 
     /// UUID is an Arrow extension type over fixed_size_binary(16); flag it in the field metadata.
+    /// JSON uses the canonical `arrow.json` extension over utf8.
     flatbuffers::Offset<flatbuffers::Vector<flatbuffers::Offset<flatbuf::KeyValue>>> custom_metadata_off = 0;
     if (isUUID(t))
     {
         VectorWithMemoryTracking<flatbuffers::Offset<flatbuf::KeyValue>> kvs;
         kvs.push_back(flatbuf::CreateKeyValue(b, b.CreateString("ARROW:extension:name"), b.CreateString("arrow.uuid")));
         kvs.push_back(flatbuf::CreateKeyValue(b, b.CreateString("ARROW:extension:metadata"), b.CreateString("")));
+        custom_metadata_off = b.CreateVector(kvs);
+    }
+    else if (isObject(t))
+    {
+        VectorWithMemoryTracking<flatbuffers::Offset<flatbuf::KeyValue>> kvs;
+        kvs.push_back(flatbuf::CreateKeyValue(b, b.CreateString("ARROW:extension:name"), b.CreateString("arrow.json")));
+        kvs.push_back(flatbuf::CreateKeyValue(b, b.CreateString("ARROW:extension:metadata"), b.CreateString("")));
+        kvs.push_back(flatbuf::CreateKeyValue(b, b.CreateString("PARQUET:logical_type"), b.CreateString("JSON")));
         custom_metadata_off = b.CreateVector(kvs);
     }
 
@@ -1076,7 +1131,10 @@ DataTypePtr fieldToCHType(
         case TypeKind::LargeBinary:
         case TypeKind::BinaryView:
         case TypeKind::Utf8View:
-            result = std::make_shared<DataTypeString>();
+            if (settings.arrow.enable_json_parsing && isJSONField(field))
+                result = std::make_shared<DataTypeObject>(DataTypeObject::SchemaFormat::JSON);
+            else
+                result = std::make_shared<DataTypeString>();
             break;
         case TypeKind::FixedSizeBinary:
             if (isUUIDField(field))
@@ -1094,6 +1152,13 @@ DataTypePtr fieldToCHType(
         }
         case TypeKind::Struct:
         {
+            /// Unshredded Spark/Parquet Variant → ClickHouse JSON (not Tuple(String, String)).
+            if (settings.arrow.enable_json_parsing && isParquetVariantField(field))
+            {
+                result = std::make_shared<DataTypeObject>(DataTypeObject::SchemaFormat::JSON);
+                break;
+            }
+
             DataTypes elems;
             Names names;
             elems.reserve(type.children.size());
