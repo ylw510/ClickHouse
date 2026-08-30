@@ -18,6 +18,9 @@ namespace JSON
 namespace DataLake::IcebergRestModels
 {
 
+/// Parse vended storage credentials from `LoadCredentialsResponse` / table config.
+
+/// Short-lived credentials for object storage (S3, GCS, ADLS).
 struct VendedStorageConfig
 {
     std::optional<std::string> gcs_oauth2_token;
@@ -28,6 +31,7 @@ struct VendedStorageConfig
     std::optional<std::string> adls_sas_token;
 };
 
+/// Reads known credential fields from a JSON config object.
 VendedStorageConfig parseVendedStorageConfig(const Poco::JSON::Object::Ptr & config);
 
 }

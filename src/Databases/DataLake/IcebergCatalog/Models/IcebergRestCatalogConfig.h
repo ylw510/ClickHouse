@@ -17,6 +17,9 @@ namespace JSON
 namespace DataLake::IcebergRestModels
 {
 
+/// Parse and serialize `GET /v1/config` (`CatalogConfigResponse`).
+
+/// Catalog defaults or per-warehouse overrides from config response.
 struct CatalogConfigSettings
 {
     std::filesystem::path prefix;
@@ -25,11 +28,13 @@ struct CatalogConfigSettings
     void mergeFrom(const CatalogConfigSettings & overrides);
 };
 
+/// Full config response with server defaults and warehouse-specific overrides.
 struct CatalogConfigResponse
 {
     CatalogConfigSettings defaults;
     CatalogConfigSettings overrides;
 
+    /// Applies overrides on top of defaults.
     CatalogConfigSettings merged() const;
 };
 

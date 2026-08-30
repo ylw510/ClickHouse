@@ -161,6 +161,16 @@ TEST(IcebergRestModels, ErrorResponseRoundtrip)
     EXPECT_EQ(parsed->code, error.code);
 }
 
+TEST(IcebergRestModels, ParseErrorResponseFromSpecExample)
+{
+    const std::string json = R"({"error":{"message":"Table does not exist","type":"NoSuchTableException","code":404}})";
+    const auto parsed = tryParseErrorResponse(json);
+    ASSERT_TRUE(parsed.has_value());
+    EXPECT_EQ(parsed->message, "Table does not exist");
+    EXPECT_EQ(parsed->type, "NoSuchTableException");
+    EXPECT_EQ(parsed->code, 404);
+}
+
 TEST(IcebergRestModels, ParseVendedStorageConfigAzure)
 {
     Poco::JSON::Object::Ptr config = new Poco::JSON::Object;

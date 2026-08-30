@@ -10,6 +10,8 @@
 namespace DataLake::IcebergRestModels
 {
 
+/// Parse OAuth2 token response from `POST /v1/oauth/tokens`.
+
 struct OAuthTokenResponse
 {
     std::string access_token;
@@ -17,6 +19,7 @@ struct OAuthTokenResponse
     std::string token_type;
 };
 
+/// Throws if required fields are missing.
 OAuthTokenResponse parseOAuthTokenResponse(const std::string & json, bool require_bearer_type = false);
 
 }

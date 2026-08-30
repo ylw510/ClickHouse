@@ -18,7 +18,11 @@ namespace JSON
 namespace DataLake::IcebergRestModels
 {
 
+/// JSON and URI helpers for Iceberg REST namespace endpoints (list, create, properties).
+
+/// Percent-encodes a namespace segment for REST paths.
 std::string encodeNamespaceForURI(const std::string & namespace_name);
+/// Query params for listing child namespaces under a parent.
 Poco::URI::QueryParameters createParentNamespaceQueryParams(const std::string & base_namespace);
 
 struct NamespaceListParseOptions
@@ -29,6 +33,7 @@ struct NamespaceListParseOptions
     bool suppress_pagination_when_all_entries_skipped = false;
 };
 
+/// One page of `ListNamespacesResponse`.
 struct NamespaceListPage
 {
     std::vector<std::string> namespaces;
@@ -42,6 +47,8 @@ NamespaceListPage parseNamespaceListPage(
 
 Poco::JSON::Object::Ptr buildCreateNamespaceRequest(const std::string & namespace_name, const std::string & location);
 std::string serializeCreateNamespaceRequest(const std::string & namespace_name, const std::string & location);
+
+/// Builds `ListNamespacesResponse` JSON.
 std::string serializeNamespaceListPage(const NamespaceListPage & page);
 
 }

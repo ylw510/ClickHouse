@@ -19,6 +19,9 @@ namespace JSON
 namespace DataLake::IcebergRestModels
 {
 
+/// JSON helpers for Iceberg REST table endpoints (list, load, create, commit).
+
+/// One page of `ListTablesResponse` table names.
 struct TableIdentifiersPage
 {
     std::vector<std::string> tables;
@@ -30,6 +33,7 @@ TableIdentifiersPage parseTableIdentifiersPage(
     const std::string & base_namespace,
     size_t limit = 0);
 
+/// Subset of `LoadTableResponse` fields needed by the catalog.
 struct LoadTableResponseView
 {
     Poco::JSON::Object::Ptr metadata;
@@ -40,22 +44,26 @@ struct LoadTableResponseView
 
 LoadTableResponseView parseLoadTableResponse(const std::string & json);
 
+/// Builds `CreateTableRequest` JSON.
 Poco::JSON::Object::Ptr buildCreateTableRequest(
     const std::string & table_name,
     Poco::JSON::Object::Ptr metadata_content,
     bool include_location);
 
+/// Builds `CommitTableRequest` for snapshot append.
 Poco::JSON::Object::Ptr buildUpdateMetadataRequest(
     const std::string & namespace_name,
     const std::string & table_name,
     Poco::JSON::Object::Ptr new_snapshot);
 
+/// Builds `CommitTableRequest` for schema evolution.
 Poco::JSON::Object::Ptr buildUpdateSchemaRequest(
     const std::string & namespace_name,
     const std::string & table_name,
     Poco::JSON::Object::Ptr new_schema,
     Int32 previous_schema_id);
 
+/// Builds `ListTablesResponse` JSON.
 std::string serializeTableIdentifiersPage(const TableIdentifiersPage & page, const std::string & base_namespace);
 
 }
