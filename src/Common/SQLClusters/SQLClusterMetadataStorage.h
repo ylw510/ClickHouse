@@ -2,8 +2,6 @@
 
 #include <Parsers/ASTSQLClusterQuery.h>
 #include <Interpreters/Context_fwd.h>
-#include <Common/ZooKeeper/ZooKeeper.h>
-#include <Common/ZooKeeper/ZooKeeperCommon.h>
 
 #include <memory>
 #include <vector>
@@ -24,24 +22,21 @@ public:
     void remove(const String & cluster_name);
     bool removeIfExists(const String & cluster_name);
 
-    /// Return true if Keeper children changed.
+    /// Return true if storage contents changed.
     bool waitUpdate();
 
+    bool isReplicated() const;
+
 private:
-    String root_path;
-    mutable zkutil::ZooKeeperPtr zookeeper_client;
-    mutable Coordination::EventPtr wait_event;
-    mutable Int32 node_cversion = 0;
+    class ISQLClusterStorage;
+    class LocalStorage;
+    class LocalStorageEncrypted;
+    class ZooKeeperStorage;
+    class ZooKeeperStorageEncrypted;
 
-    SQLClusterMetadataStorage(ContextPtr context_, String root_path_);
+    std::shared_ptr<ISQLClusterStorage> storage;
 
-    zkutil::ZooKeeperPtr getClient() const;
-    String getPath(const String & file_name) const;
-    std::vector<String> list() const;
-    String read(const String & file_name) const;
-    void write(const String & file_name, const String & data, bool replace);
-    bool removeNodeIfExists(const String & file_name);
-    bool waitUpdateImpl(size_t timeout);
+    SQLClusterMetadataStorage(std::shared_ptr<ISQLClusterStorage> storage_, ContextPtr context_);
 };
 
 }

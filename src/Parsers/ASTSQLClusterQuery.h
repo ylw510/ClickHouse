@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Parsers/IAST.h>
+#include <Parsers/ASTQueryWithOnCluster.h>
 #include <Common/SettingsChanges.h>
 
 #include <vector>
@@ -45,7 +46,7 @@ protected:
     void formatImpl(WriteBuffer & ostr, const FormatSettings & s, FormatState & state, FormatStateStacked frame) const override;
 };
 
-class ASTCreateSQLClusterQuery : public IAST
+class ASTCreateSQLClusterQuery : public IAST, public ASTQueryWithOnCluster
 {
 public:
     String cluster_name;
@@ -56,11 +57,15 @@ public:
     ASTPtr clone() const override;
     QueryKind getQueryKind() const override { return QueryKind::Create; }
 
+    ASTPtr getRewrittenASTWithoutOnCluster(const WithoutOnClusterASTRewriteParams &) const override { return removeOnCluster<ASTCreateSQLClusterQuery>(clone()); }
+
+    bool hasSecretParts() const override { return true; }
+
 protected:
     void formatImpl(WriteBuffer & ostr, const FormatSettings & s, FormatState & state, FormatStateStacked frame) const override;
 };
 
-class ASTAlterSQLClusterQuery : public IAST
+class ASTAlterSQLClusterQuery : public IAST, public ASTQueryWithOnCluster
 {
 public:
     String cluster_name;
@@ -71,11 +76,15 @@ public:
     ASTPtr clone() const override;
     QueryKind getQueryKind() const override { return QueryKind::Alter; }
 
+    ASTPtr getRewrittenASTWithoutOnCluster(const WithoutOnClusterASTRewriteParams &) const override { return removeOnCluster<ASTAlterSQLClusterQuery>(clone()); }
+
+    bool hasSecretParts() const override { return true; }
+
 protected:
     void formatImpl(WriteBuffer & ostr, const FormatSettings & s, FormatState & state, FormatStateStacked frame) const override;
 };
 
-class ASTDropSQLClusterQuery : public IAST
+class ASTDropSQLClusterQuery : public IAST, public ASTQueryWithOnCluster
 {
 public:
     String cluster_name;
@@ -84,6 +93,8 @@ public:
     String getID(char) const override { return "DropSQLClusterQuery"; }
     ASTPtr clone() const override;
     QueryKind getQueryKind() const override { return QueryKind::Drop; }
+
+    ASTPtr getRewrittenASTWithoutOnCluster(const WithoutOnClusterASTRewriteParams &) const override { return removeOnCluster<ASTDropSQLClusterQuery>(clone()); }
 
 protected:
     void formatImpl(WriteBuffer & ostr, const FormatSettings & s, FormatState & state, FormatStateStacked frame) const override;

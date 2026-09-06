@@ -1,6 +1,9 @@
 #include <Interpreters/InterpreterSQLClusterQuery.h>
 #include <Interpreters/InterpreterFactory.h>
 #include <Access/ContextAccess.h>
+#include <Interpreters/Context.h>
+#include <Interpreters/executeDDLQueryOnCluster.h>
+#include <Interpreters/removeOnClusterClauseIfNeeded.h>
 #include <Common/SQLClusters/SQLClusterFactory.h>
 #include <Parsers/ASTSQLClusterQuery.h>
 
@@ -10,27 +13,64 @@ namespace DB
 
 BlockIO InterpreterCreateSQLClusterQuery::execute()
 {
-    const auto & query = query_ptr->as<const ASTCreateSQLClusterQuery &>();
-    getContext()->checkAccess(AccessType::CREATE_SQL_CLUSTER);
+    auto current_context = getContext();
+
+    const auto updated_query = removeOnClusterClauseIfNeeded(query_ptr, getContext());
+    const auto & query = updated_query->as<const ASTCreateSQLClusterQuery &>();
+
+    current_context->checkAccess(AccessType::CREATE_SQL_CLUSTER);
+
+    if (!query.cluster.empty())
+    {
+        DDLQueryOnClusterParams params;
+        return executeDDLQueryOnCluster(updated_query, current_context, params);
+    }
+
     SQLClusterFactory::instance().createFromSQL(query);
     return {};
 }
 
 BlockIO InterpreterAlterSQLClusterQuery::execute()
 {
-    const auto & query = query_ptr->as<const ASTAlterSQLClusterQuery &>();
-    getContext()->checkAccess(AccessType::ALTER_SQL_CLUSTER);
+    auto current_context = getContext();
+
+    const auto updated_query = removeOnClusterClauseIfNeeded(query_ptr, getContext());
+    const auto & query = updated_query->as<const ASTAlterSQLClusterQuery &>();
+
+    current_context->checkAccess(AccessType::ALTER_SQL_CLUSTER);
+
+    if (!query.cluster.empty())
+    {
+        DDLQueryOnClusterParams params;
+        return executeDDLQueryOnCluster(updated_query, current_context, params);
+    }
+
     SQLClusterFactory::instance().alterFromSQL(query);
     return {};
 }
 
 BlockIO InterpreterDropSQLClusterQuery::execute()
 {
-    const auto & query = query_ptr->as<const ASTDropSQLClusterQuery &>();
-    getContext()->checkAccess(AccessType::DROP_SQL_CLUSTER);
+    auto current_context = getContext();
+
+    const auto updated_query = removeOnClusterClauseIfNeeded(query_ptr, getContext());
+    const auto & query = updated_query->as<const ASTDropSQLClusterQuery &>();
+
+    current_context->checkAccess(AccessType::DROP_SQL_CLUSTER);
+
+    if (!query.cluster.empty())
+    {
+        DDLQueryOnClusterParams params;
+        return executeDDLQueryOnCluster(updated_query, current_context, params);
+    }
+
     SQLClusterFactory::instance().dropFromSQL(query);
     return {};
 }
+
+void registerInterpreterCreateSQLClusterQuery(InterpreterFactory & factory);
+void registerInterpreterAlterSQLClusterQuery(InterpreterFactory & factory);
+void registerInterpreterDropSQLClusterQuery(InterpreterFactory & factory);
 
 void registerInterpreterCreateSQLClusterQuery(InterpreterFactory & factory)
 {

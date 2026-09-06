@@ -19,7 +19,6 @@ namespace ErrorCodes
     extern const int CLUSTER_ALREADY_EXISTS;
     extern const int CLUSTER_DOESNT_EXIST;
     extern const int INVALID_CONFIG_PARAMETER;
-    extern const int SUPPORT_IS_DISABLED;
     extern const int BAD_ARGUMENTS;
     extern const int NO_ELEMENTS_IN_CONFIG;
 }
@@ -155,53 +154,52 @@ void SQLClusterFactory::shutdown()
     metadata_storage.reset();
 }
 
-bool SQLClusterFactory::isEnabled() const
-{
-    std::lock_guard lock(mutex);
-    return metadata_storage != nullptr;
-}
-
 void SQLClusterFactory::loadIfNot()
 {
     std::lock_guard lock(mutex);
-    loadIfNot(lock);
+    loadIfNotImpl(lock);
 }
 
-void SQLClusterFactory::loadIfNot(std::lock_guard<std::mutex> & lock)
+bool SQLClusterFactory::usesReplicatedStorage()
+{
+    std::lock_guard lock(mutex);
+    loadIfNotImpl(lock);
+    return metadata_storage->isReplicated();
+}
+
+void SQLClusterFactory::loadIfNotImpl(std::lock_guard<std::mutex> &)
 {
     if (loaded)
         return;
 
-    auto context = Context::getGlobalContextInstance();
+    auto context = Context::getGlobalContextInstance()->getGlobalContext();
     metadata_storage = SQLClusterMetadataStorage::create(context);
-    if (!metadata_storage)
-    {
-        loaded = true;
-        return;
-    }
 
     reloadFromStorage();
 
-    update_task = context->getSchedulePool().createTask(StorageID::createEmpty(), "SQLClusterMetadataStorage", [this] { updateFunc(); });
-    update_task->activate();
-    update_task->schedule();
+    if (metadata_storage->isReplicated())
+    {
+        update_task = context->getSchedulePool()->createTask(StorageID::createEmpty(), "SQLClusterMetadataStorage", [this] { updateFunc(); });
+        update_task->activate();
+        update_task->schedule();
+    }
 
     loaded = true;
 }
 
 void SQLClusterFactory::reloadFromStorage()
 {
-    auto context = Context::getGlobalContextInstance();
+    auto context = Context::getGlobalContextInstance()->getGlobalContext();
     const auto cluster_names = metadata_storage->listClusterNames();
-    std::unordered_set<String> new_keeper_cluster_names(cluster_names.begin(), cluster_names.end());
+    std::unordered_set<String> new_stored_cluster_names(cluster_names.begin(), cluster_names.end());
 
-    for (const auto & cluster_name : keeper_cluster_names)
+    for (const auto & cluster_name : stored_cluster_names)
     {
-        if (!new_keeper_cluster_names.contains(cluster_name))
+        if (!new_stored_cluster_names.contains(cluster_name))
             context->removeCluster(cluster_name);
     }
 
-    keeper_cluster_names = new_keeper_cluster_names;
+    stored_cluster_names = new_stored_cluster_names;
 
     for (const auto & cluster_name : cluster_names)
     {
@@ -214,10 +212,7 @@ void SQLClusterFactory::reloadFromStorage()
 void SQLClusterFactory::createFromSQL(const ASTCreateSQLClusterQuery & query)
 {
     std::lock_guard lock(mutex);
-    loadIfNot(lock);
-
-    if (!metadata_storage)
-        throw Exception(ErrorCodes::SUPPORT_IS_DISABLED, "SQL cluster DDL is disabled: configure `<cluster_metadata>` to enable it");
+    loadIfNotImpl(lock);
 
     if (metadata_storage->exists(query.cluster_name))
     {
@@ -229,18 +224,15 @@ void SQLClusterFactory::createFromSQL(const ASTCreateSQLClusterQuery & query)
     auto create_statement = query.formatWithSecretsOneLine();
     metadata_storage->writeCreateQuery(query.cluster_name, create_statement, false);
 
-    auto context = Context::getGlobalContextInstance();
+    auto context = Context::getGlobalContextInstance()->getGlobalContext();
     context->setCluster(query.cluster_name, materializeCluster(query, context));
-    keeper_cluster_names.insert(query.cluster_name);
+    stored_cluster_names.insert(query.cluster_name);
 }
 
 void SQLClusterFactory::alterFromSQL(const ASTAlterSQLClusterQuery & query)
 {
     std::lock_guard lock(mutex);
-    loadIfNot(lock);
-
-    if (!metadata_storage)
-        throw Exception(ErrorCodes::SUPPORT_IS_DISABLED, "SQL cluster DDL is disabled: configure `<cluster_metadata>` to enable it");
+    loadIfNotImpl(lock);
 
     if (!metadata_storage->exists(query.cluster_name))
     {
@@ -255,17 +247,14 @@ void SQLClusterFactory::alterFromSQL(const ASTAlterSQLClusterQuery & query)
 
     metadata_storage->writeCreateQuery(query.cluster_name, create_query.formatWithSecretsOneLine(), true);
 
-    auto context = Context::getGlobalContextInstance();
+    auto context = Context::getGlobalContextInstance()->getGlobalContext();
     context->setCluster(query.cluster_name, materializeCluster(create_query, context));
 }
 
 void SQLClusterFactory::dropFromSQL(const ASTDropSQLClusterQuery & query)
 {
     std::lock_guard lock(mutex);
-    loadIfNot(lock);
-
-    if (!metadata_storage)
-        throw Exception(ErrorCodes::SUPPORT_IS_DISABLED, "SQL cluster DDL is disabled: configure `<cluster_metadata>` to enable it");
+    loadIfNotImpl(lock);
 
     if (!metadata_storage->removeIfExists(query.cluster_name))
     {
@@ -274,9 +263,9 @@ void SQLClusterFactory::dropFromSQL(const ASTDropSQLClusterQuery & query)
         throw Exception(ErrorCodes::CLUSTER_DOESNT_EXIST, "SQL cluster `{}` does not exist", query.cluster_name);
     }
 
-    auto context = Context::getGlobalContextInstance();
+    auto context = Context::getGlobalContextInstance()->getGlobalContext();
     context->removeCluster(query.cluster_name);
-    keeper_cluster_names.erase(query.cluster_name);
+    stored_cluster_names.erase(query.cluster_name);
 }
 
 void SQLClusterFactory::updateFunc()

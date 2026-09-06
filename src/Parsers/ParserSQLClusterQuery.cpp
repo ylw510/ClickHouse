@@ -1,5 +1,6 @@
 #include <Parsers/ASTSQLClusterQuery.h>
 #include <Parsers/ASTIdentifier_fwd.h>
+#include <Parsers/ASTQueryWithOnCluster.h>
 #include <Parsers/CommonParsers.h>
 #include <Parsers/ExpressionElementParsers.h>
 #include <Parsers/ParserSetQuery.h>
@@ -65,7 +66,7 @@ bool parseShard(IParser::Pos & pos, Expected & expected, ASTPtr & shard)
 
     auto shard_ast = make_intrusive<ASTSQLClusterShard>();
 
-    while (!pos.isEnd())
+    while (!pos->isEnd())
     {
         if (s_rparen.ignore(pos, expected))
             break;
@@ -106,7 +107,7 @@ bool parseClusterDefinition(IParser::Pos & pos, Expected & expected, ASTPtr & de
 
     auto definition_ast = make_intrusive<ASTSQLClusterDefinition>();
 
-    while (!pos.isEnd())
+    while (!pos->isEnd())
     {
         if (s_rparen.ignore(pos, expected))
             break;
@@ -146,6 +147,7 @@ bool ParserCreateSQLClusterQuery::parseImpl(Pos & pos, ASTPtr & node, Expected &
     ParserKeyword s_create(Keyword::CREATE);
     ParserKeyword s_cluster(Keyword::CLUSTER);
     ParserKeyword s_if_not_exists(Keyword::IF_NOT_EXISTS);
+    ParserKeyword s_on(Keyword::ON);
     ParserIdentifier name_p;
 
     if (!s_create.ignore(pos, expected))
@@ -161,6 +163,13 @@ bool ParserCreateSQLClusterQuery::parseImpl(Pos & pos, ASTPtr & node, Expected &
     if (!name_p.parse(pos, name_ast, expected))
         return false;
 
+    String cluster_str;
+    if (s_on.ignore(pos, expected))
+    {
+        if (!ASTQueryWithOnCluster::parse(pos, cluster_str, expected))
+            return false;
+    }
+
     ASTPtr definition;
     if (!parseClusterDefinition(pos, expected, definition))
         return false;
@@ -169,6 +178,7 @@ bool ParserCreateSQLClusterQuery::parseImpl(Pos & pos, ASTPtr & node, Expected &
     tryGetIdentifierNameInto(name_ast, query->cluster_name);
     query->definition = definition;
     query->if_not_exists = if_not_exists;
+    query->cluster = std::move(cluster_str);
     node = query;
     return true;
 }
@@ -178,6 +188,7 @@ bool ParserAlterSQLClusterQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & 
     ParserKeyword s_alter(Keyword::ALTER);
     ParserKeyword s_cluster(Keyword::CLUSTER);
     ParserKeyword s_if_exists(Keyword::IF_EXISTS);
+    ParserKeyword s_on(Keyword::ON);
     ParserIdentifier name_p;
 
     if (!s_alter.ignore(pos, expected))
@@ -193,6 +204,13 @@ bool ParserAlterSQLClusterQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & 
     if (!name_p.parse(pos, name_ast, expected))
         return false;
 
+    String cluster_str;
+    if (s_on.ignore(pos, expected))
+    {
+        if (!ASTQueryWithOnCluster::parse(pos, cluster_str, expected))
+            return false;
+    }
+
     ASTPtr definition;
     if (!parseClusterDefinition(pos, expected, definition))
         return false;
@@ -201,6 +219,7 @@ bool ParserAlterSQLClusterQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & 
     tryGetIdentifierNameInto(name_ast, query->cluster_name);
     query->definition = definition;
     query->if_exists = if_exists;
+    query->cluster = std::move(cluster_str);
     node = query;
     return true;
 }
@@ -210,6 +229,7 @@ bool ParserDropSQLClusterQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & e
     ParserKeyword s_drop(Keyword::DROP);
     ParserKeyword s_cluster(Keyword::CLUSTER);
     ParserKeyword s_if_exists(Keyword::IF_EXISTS);
+    ParserKeyword s_on(Keyword::ON);
     ParserIdentifier name_p;
 
     if (!s_drop.ignore(pos, expected))
@@ -225,9 +245,17 @@ bool ParserDropSQLClusterQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & e
     if (!name_p.parse(pos, name_ast, expected))
         return false;
 
+    String cluster_str;
+    if (s_on.ignore(pos, expected))
+    {
+        if (!ASTQueryWithOnCluster::parse(pos, cluster_str, expected))
+            return false;
+    }
+
     auto query = make_intrusive<ASTDropSQLClusterQuery>();
     tryGetIdentifierNameInto(name_ast, query->cluster_name);
     query->if_exists = if_exists;
+    query->cluster = std::move(cluster_str);
     node = query;
     return true;
 }

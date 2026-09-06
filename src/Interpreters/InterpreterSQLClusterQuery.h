@@ -53,8 +53,4 @@ private:
     ASTPtr query_ptr;
 };
 
-void registerInterpreterCreateSQLClusterQuery(InterpreterFactory & factory);
-void registerInterpreterAlterSQLClusterQuery(InterpreterFactory & factory);
-void registerInterpreterDropSQLClusterQuery(InterpreterFactory & factory);
-
 }

@@ -22,9 +22,9 @@ public:
 
     void shutdown();
 
-    bool isEnabled() const;
-
     void loadIfNot();
+
+    bool usesReplicatedStorage();
 
     void createFromSQL(const ASTCreateSQLClusterQuery & query);
     void alterFromSQL(const ASTAlterSQLClusterQuery & query);
@@ -35,15 +35,15 @@ private:
 
     static ClusterPtr materializeCluster(const ASTCreateSQLClusterQuery & query, ContextPtr context);
 
-    void loadIfNot(std::lock_guard<std::mutex> & lock);
+    void loadIfNotImpl(std::lock_guard<std::mutex> & lock);
     void reloadFromStorage();
     void updateFunc();
 
     mutable std::mutex mutex;
-    std::unique_ptr<SQLClusterMetadataStorage> metadata_storage TSA_GUARDED_BY(mutex);
-    /// Snapshot of cluster names from the last Keeper sync, used only to drop removed clusters from Context.
-    std::unordered_set<String> keeper_cluster_names TSA_GUARDED_BY(mutex);
-    bool loaded TSA_GUARDED_BY(mutex) = false;
+    std::unique_ptr<SQLClusterMetadataStorage> metadata_storage;
+    /// Snapshot of cluster names from the last storage sync, used only to drop removed clusters from Context.
+    std::unordered_set<String> stored_cluster_names;
+    bool loaded = false;
     std::atomic<bool> shutdown_called = false;
     BackgroundSchedulePoolTaskHolder update_task;
     LoggerPtr log = getLogger("SQLClusterFactory");

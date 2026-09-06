@@ -2,6 +2,7 @@
 #include <Parsers/ASTLiteral.h>
 #include <Parsers/formatSettingName.h>
 #include <IO/Operators.h>
+#include <Common/FieldVisitorToString.h>
 #include <Common/quoteString.h>
 
 
@@ -14,9 +15,7 @@ namespace
 void formatPropertiesAssignments(
     WriteBuffer & ostr,
     const SettingsChanges & properties,
-    const IAST::FormatSettings & settings,
-    IAST::FormatState & state,
-    IAST::FormatStateStacked frame)
+    const IAST::FormatSettings & settings)
 {
     for (size_t i = 0; i < properties.size(); ++i)
     {
@@ -24,8 +23,10 @@ void formatPropertiesAssignments(
             ostr << ", ";
 
         formatSettingName(properties[i].name, ostr);
-        ostr << " = ";
-        properties[i].value.writeText(ostr, settings);
+        if (settings.show_secrets || properties[i].name != "password")
+            ostr << " = " << applyVisitor(FieldVisitorToString(), properties[i].value);
+        else
+            ostr << " = '[HIDDEN]'";
     }
 }
 
@@ -37,9 +38,9 @@ ASTPtr ASTSQLClusterReplica::clone() const
     return res;
 }
 
-void ASTSQLClusterReplica::formatImpl(WriteBuffer & ostr, const FormatSettings & settings, FormatState & state, FormatStateStacked frame) const
+void ASTSQLClusterReplica::formatImpl(WriteBuffer & ostr, const FormatSettings & settings, FormatState &, FormatStateStacked) const
 {
-    formatPropertiesAssignments(ostr, properties, settings, state, frame);
+    formatPropertiesAssignments(ostr, properties, settings);
 }
 
 ASTPtr ASTSQLClusterShard::clone() const
@@ -58,7 +59,7 @@ void ASTSQLClusterShard::formatImpl(WriteBuffer & ostr, const FormatSettings & s
 
     if (!properties.empty())
     {
-        formatPropertiesAssignments(ostr, properties, settings, state, frame);
+        formatPropertiesAssignments(ostr, properties, settings);
         need_comma = true;
     }
 
@@ -91,7 +92,7 @@ void ASTSQLClusterDefinition::formatImpl(WriteBuffer & ostr, const FormatSetting
 
     if (!cluster_properties.empty())
     {
-        formatPropertiesAssignments(ostr, cluster_properties, settings, state, frame);
+        formatPropertiesAssignments(ostr, cluster_properties, settings);
         need_comma = true;
     }
 
@@ -120,6 +121,7 @@ void ASTCreateSQLClusterQuery::formatImpl(WriteBuffer & ostr, const FormatSettin
     if (if_not_exists)
         ostr << "IF NOT EXISTS ";
     ostr << backQuoteIfNeed(cluster_name) << " ";
+    formatOnCluster(ostr, settings);
     definition->format(ostr, settings, state, frame);
 }
 
@@ -137,6 +139,7 @@ void ASTAlterSQLClusterQuery::formatImpl(WriteBuffer & ostr, const FormatSetting
     if (if_exists)
         ostr << "IF EXISTS ";
     ostr << backQuoteIfNeed(cluster_name) << " ";
+    formatOnCluster(ostr, settings);
     definition->format(ostr, settings, state, frame);
 }
 
@@ -145,12 +148,13 @@ ASTPtr ASTDropSQLClusterQuery::clone() const
     return make_intrusive<ASTDropSQLClusterQuery>(*this);
 }
 
-void ASTDropSQLClusterQuery::formatImpl(WriteBuffer & ostr, const FormatSettings & settings, FormatState & state, FormatStateStacked frame) const
+void ASTDropSQLClusterQuery::formatImpl(WriteBuffer & ostr, const FormatSettings & settings, FormatState &, FormatStateStacked) const
 {
     ostr << "DROP CLUSTER ";
     if (if_exists)
         ostr << "IF EXISTS ";
     ostr << backQuoteIfNeed(cluster_name);
+    formatOnCluster(ostr, settings);
 }
 
 }
