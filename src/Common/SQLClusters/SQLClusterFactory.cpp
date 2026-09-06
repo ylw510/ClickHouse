@@ -27,25 +27,6 @@ namespace
 
 using Properties = SettingsChanges;
 
-bool hasProperty(const Properties & properties, const String & name)
-{
-    return std::any_of(properties.begin(), properties.end(), [&](const SettingChange & change) { return change.name == name; });
-}
-
-Properties mergeProperties(const Properties & base, const Properties & override_properties)
-{
-    Properties result = base;
-    for (const auto & change : override_properties)
-    {
-        auto it = std::find_if(result.begin(), result.end(), [&](const SettingChange & existing) { return existing.name == change.name; });
-        if (it != result.end())
-            it->value = change.value;
-        else
-            result.push_back(change);
-    }
-    return result;
-}
-
 void setConfigValue(Poco::Util::MapConfiguration & config, const String & key, const Field & value)
 {
     if (value.getType() == Field::Types::String)
@@ -106,11 +87,12 @@ ClusterPtr SQLClusterFactory::materializeCluster(const ASTCreateSQLClusterQuery 
     {
         ++shard_num;
         const auto & shard = shard_ast->as<const ASTSQLClusterShard &>();
-        const auto shard_properties = mergeProperties(definition.cluster_properties, shard.properties);
+        Properties shard_properties = definition.cluster_properties;
+        shard_properties.setSettings(shard.properties);
 
         if (shard.replicas.empty())
         {
-            if (!hasProperty(shard_properties, "host"))
+            if (!shard_properties.tryGet("host"))
                 throw Exception(ErrorCodes::BAD_ARGUMENTS, "Shard {} in SQL cluster `{}` must have `host` or at least one REPLICA", shard_num, query.cluster_name);
 
             const String node_prefix = cluster_prefix + ".node" + std::to_string(shard_num);
@@ -126,7 +108,8 @@ ClusterPtr SQLClusterFactory::materializeCluster(const ASTCreateSQLClusterQuery 
             for (const auto & replica_ast : shard.replicas)
             {
                 ++replica_num;
-                const auto replica_properties = mergeProperties(shard_properties, replica_ast->as<const ASTSQLClusterReplica &>().properties);
+                Properties replica_properties = shard_properties;
+                replica_properties.setSettings(replica_ast->as<const ASTSQLClusterReplica &>().properties);
                 applyReplicaProperties(*config, shard_prefix + ".replica" + std::to_string(replica_num), replica_properties);
             }
         }
