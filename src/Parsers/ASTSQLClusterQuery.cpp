@@ -23,7 +23,7 @@ void formatPropertiesAssignments(
             ostr << ", ";
 
         formatSettingName(properties[i].name, ostr);
-        if (settings.show_secrets || properties[i].name != "password")
+        if (settings.show_secrets || (properties[i].name != "password" && properties[i].name != "secret"))
             ostr << " = " << applyVisitor(FieldVisitorToString(), properties[i].value);
         else
             ostr << " = '[HIDDEN]'";

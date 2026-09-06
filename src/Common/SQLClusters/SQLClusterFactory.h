@@ -33,7 +33,10 @@ public:
 private:
     SQLClusterFactory() = default;
 
-    static ClusterPtr materializeCluster(const ASTCreateSQLClusterQuery & query, ContextPtr context);
+    static ClusterPtr materializeCluster(
+        const ASTCreateSQLClusterQuery & query,
+        ContextPtr context,
+        String create_statement);
 
     void loadIfNotImpl(std::lock_guard<std::mutex> & lock);
     void reloadFromStorage();

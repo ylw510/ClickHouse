@@ -72,7 +72,10 @@ void applyClusterProperties(Poco::Util::MapConfiguration & config, const String 
 
 }
 
-ClusterPtr SQLClusterFactory::materializeCluster(const ASTCreateSQLClusterQuery & query, ContextPtr context)
+ClusterPtr SQLClusterFactory::materializeCluster(
+    const ASTCreateSQLClusterQuery & query,
+    ContextPtr context,
+    String create_statement)
 {
     const auto & definition = query.definition->as<const ASTSQLClusterDefinition &>();
     const auto & settings = context->getSettingsRef();
@@ -118,7 +121,13 @@ ClusterPtr SQLClusterFactory::materializeCluster(const ASTCreateSQLClusterQuery 
     if (shard_num == 0)
         throw Exception(ErrorCodes::NO_ELEMENTS_IN_CONFIG, "SQL cluster `{}` must contain at least one shard", query.cluster_name);
 
-    return std::make_shared<Cluster>(*config, settings, "cluster", query.cluster_name);
+    return std::make_shared<Cluster>(
+        *config,
+        settings,
+        "cluster",
+        query.cluster_name,
+        Cluster::SourceId::SQL,
+        std::move(create_statement));
 }
 
 SQLClusterFactory & SQLClusterFactory::instance()
@@ -186,7 +195,8 @@ void SQLClusterFactory::reloadFromStorage()
     for (const auto & cluster_name : cluster_names)
     {
         const auto create_query = metadata_storage->readCreateQuery(cluster_name);
-        auto cluster = materializeCluster(create_query, context);
+        auto create_statement = create_query.formatWithSecretsOneLine();
+        auto cluster = materializeCluster(create_query, context, std::move(create_statement));
         context->setCluster(cluster_name, cluster);
     }
 }
@@ -207,7 +217,7 @@ void SQLClusterFactory::createFromSQL(const ASTCreateSQLClusterQuery & query)
     metadata_storage->writeCreateQuery(query.cluster_name, create_statement, false);
 
     auto context = Context::getGlobalContextInstance()->getGlobalContext();
-    context->setCluster(query.cluster_name, materializeCluster(query, context));
+    context->setCluster(query.cluster_name, materializeCluster(query, context, create_statement));
     stored_cluster_names.insert(query.cluster_name);
 }
 
@@ -227,10 +237,11 @@ void SQLClusterFactory::alterFromSQL(const ASTAlterSQLClusterQuery & query)
     create_query.cluster_name = query.cluster_name;
     create_query.definition = query.definition->clone();
 
-    metadata_storage->writeCreateQuery(query.cluster_name, create_query.formatWithSecretsOneLine(), true);
+    auto create_statement = create_query.formatWithSecretsOneLine();
+    metadata_storage->writeCreateQuery(query.cluster_name, create_statement, true);
 
     auto context = Context::getGlobalContextInstance()->getGlobalContext();
-    context->setCluster(query.cluster_name, materializeCluster(create_query, context));
+    context->setCluster(query.cluster_name, materializeCluster(create_query, context, create_statement));
 }
 
 void SQLClusterFactory::dropFromSQL(const ASTDropSQLClusterQuery & query)
