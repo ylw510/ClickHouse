@@ -31,6 +31,7 @@ namespace ProfileEvents
     extern const Event AggregationOptimizedEqualRangesOfKeys;
     extern const Event AdaptiveAggregationThaws;
     extern const Event AdaptiveAggregationStagedChunkPiecesOverBound;
+    extern const Event AdaptiveAggregationStagedClaimsClosedAtBound;
     extern const Event AdaptiveAggregationProbeBypasses;
     extern const Event AdaptiveAggregationStagedRecords;
     extern const Event AdaptiveAggregationStagedRecordsMerged;
@@ -1817,6 +1818,48 @@ void Aggregator::spillDetachedAdaptiveTable(AdaptiveAggregationSession & shared,
     consumeToTemporaryFile(table);
 }
 
+Aggregator::StagedChunkClaim Aggregator::claimStagedChunksToBound(
+    const std::vector<StagedChunkPtr> & chunks,
+    size_t begin,
+    AggregatedDataVariants::Type type,
+    size_t records_target,
+    size_t bytes_target) const
+{
+    StagedChunkClaim claim;
+    claim.end = begin;
+    for (; claim.end < chunks.size(); ++claim.end)
+    {
+        const StagedChunk & chunk = *chunks[claim.end];
+        const size_t records = claim.records + chunk.keys.size();
+        const size_t staged_bytes = claim.staged_bytes + stagedChunkBytes(chunk);
+        const bool reaches_target
+            = records >= records_target || estimateAdaptiveDrainBytes(type, records, staged_bytes) >= bytes_target;
+
+        /// The claim is closed before the chunk that would take it to a target, not after: the
+        /// bound is meant for the batch as drained, and a claim that took the chunk it crossed
+        /// on would hold two chunks each just under the target - two pieces of a cut chunk that
+        /// are single records over half a part, say - and drain both into one table, twice the
+        /// part the bound exists to keep. Only a first chunk that is over a target alone is
+        /// taken as it is, because a chunk is claimed whole.
+        if (reaches_target && claim.end > begin)
+        {
+            claim.full = true;
+            ProfileEvents::increment(ProfileEvents::AdaptiveAggregationStagedClaimsClosedAtBound);
+            break;
+        }
+
+        claim.records = records;
+        claim.staged_bytes = staged_bytes;
+        if (reaches_target)
+        {
+            claim.full = true;
+            ++claim.end;
+            break;
+        }
+    }
+    return claim;
+}
+
 void Aggregator::drainStagedChunksAtFinish(AdaptiveAggregationSession & shared) const
 {
     std::unique_lock sweep_lock(shared.pressure_sweep_mutex);
@@ -1870,31 +1913,19 @@ void Aggregator::drainStagedChunksAtFinish(AdaptiveAggregationSession & shared) 
         }
 
         /// The batch is capped at the table's remaining capacity to the part bound, with a
-        /// quarter of it as the minimum so a batch stays worth its bucket-major pass; a part
-        /// therefore overshoots by at most a quarter instead of a whole batch. The cap is read
-        /// in records and in bytes both, the same way the pressure sweep claims: a record
-        /// count derived from the fixed state width says nothing about a backlog of wide keys
-        /// or wide staged arguments, which would otherwise rebuild here the over-budget
-        /// working set the sweeps exist to avoid.
+        /// quarter of it as the minimum so a batch stays worth its bucket-major pass; the claim
+        /// closes before the chunk that would take it over the cap, so a part overshoots by no
+        /// more than a single chunk that is over the cap alone. The cap is read in records and
+        /// in bytes both, the same way the pressure sweep claims: a record count derived from
+        /// the fixed state width says nothing about a backlog of wide keys or wide staged
+        /// arguments, which would otherwise rebuild here the over-budget working set the sweeps
+        /// exist to avoid.
         const size_t table_records = shared.early_drain_variants->size();
         const size_t table_bytes = sharedDrainTableBytes(shared);
         const size_t batch_target = std::max(part_records - std::min(part_records, table_records), part_records / 4 + 1);
         const size_t batch_bytes_target = std::max(part_bytes - std::min(part_bytes, table_bytes), part_bytes / 4 + 1);
 
-        size_t batch_records = 0;
-        size_t batch_staged_bytes = 0;
-        size_t end = begin;
-        for (; end < chunks.size(); ++end)
-        {
-            batch_records += chunks[end]->keys.size();
-            batch_staged_bytes += stagedChunkBytes(*chunks[end]);
-            if (batch_records >= batch_target
-                || estimateAdaptiveDrainBytes(drain_type, batch_records, batch_staged_bytes) >= batch_bytes_target)
-            {
-                ++end;
-                break;
-            }
-        }
+        const size_t end = claimStagedChunksToBound(chunks, begin, drain_type, batch_target, batch_bytes_target).end;
 
         const std::vector<StagedChunkPtr> batch(
             std::make_move_iterator(chunks.begin() + begin), std::make_move_iterator(chunks.begin() + end));
@@ -1961,25 +1992,15 @@ bool Aggregator::drainStagedChunksBatchUnderMemoryPressure(
         /// whole staged footprint - the gathered argument columns of a general-aggregate chunk
         /// as much as its keys - because the batch keeps holding it until `drainStagedBatch`
         /// returns, so a stream of wide arguments is a working set the destination table's
-        /// estimate alone does not see. A batch that reached either bound is a part of its
-        /// own, which is what tells the two regimes below apart; a batch that merely ran out
-        /// of chunks is the tail.
+        /// estimate alone does not see. A batch that reached either bound, or was closed before
+        /// the chunk that would have taken it there, is a part of its own, which is what tells
+        /// the two regimes below apart; a batch that merely ran out of chunks is the tail.
         routing_type = shared.early_drain_variants->type;
-        bool batch_is_full = false;
-        size_t batch_staged_bytes = 0;
-        size_t split = 0;
-        for (; split < chunks.size(); ++split)
-        {
-            batch_records += chunks[split]->keys.size();
-            batch_staged_bytes += stagedChunkBytes(*chunks[split]);
-            if (batch_records >= adaptive_pressure_spill_min_keys
-                || estimateAdaptiveDrainBytes(routing_type, batch_records, batch_staged_bytes) >= part_bytes)
-            {
-                batch_is_full = true;
-                ++split;
-                break;
-            }
-        }
+        const auto claim = claimStagedChunksToBound(chunks, 0, routing_type, adaptive_pressure_spill_min_keys, part_bytes);
+        const bool batch_is_full = claim.full;
+        const size_t batch_staged_bytes = claim.staged_bytes;
+        const size_t split = claim.end;
+        batch_records = claim.records;
         batch.assign(std::make_move_iterator(chunks.begin()), std::make_move_iterator(chunks.begin() + split));
         for (size_t i = split; i < chunks.size(); ++i)
             shared.backlog.requeue(chunks[i]);

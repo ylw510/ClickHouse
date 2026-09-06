@@ -367,6 +367,28 @@ public:
     /// returns. Saturating, because an absurd product only means "ask for the whole budget".
     size_t estimateAdaptiveDrainBytes(AggregatedDataVariants::Type type, size_t records, size_t staged_bytes) const;
 
+    /// One claim of a drain, from the chunks in order starting at `begin`: the batch takes the
+    /// next chunk while the batch with it stays under both targets, and is closed before the
+    /// chunk that would take it to either, which is left for the next claim, so the table a
+    /// drain builds stays under the bound the targets were sized to. Only a first chunk that is
+    /// over a target alone is taken regardless, because a chunk is claimed whole. A claim that
+    /// reached a target, or was closed before the chunk that would have reached it, is full - a
+    /// part of its own; one that ran out of chunks is the tail.
+    struct StagedChunkClaim
+    {
+        /// One past the last chunk claimed.
+        size_t end = 0;
+        size_t records = 0;
+        size_t staged_bytes = 0;
+        bool full = false;
+    };
+    StagedChunkClaim claimStagedChunksToBound(
+        const std::vector<StagedChunkPtr> & chunks,
+        size_t begin,
+        AggregatedDataVariants::Type type,
+        size_t records_target,
+        size_t bytes_target) const;
+
     /// For a producer back on the baseline path, which cannot free the shared drain table by
     /// flushing its own: writes that table out regardless of the part floor, then returns query
     /// memory sampled with none of it resident and no detached table in flight. Empty when no
