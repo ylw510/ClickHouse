@@ -18,7 +18,6 @@ namespace ErrorCodes
 {
     extern const int CLUSTER_ALREADY_EXISTS;
     extern const int CLUSTER_DOESNT_EXIST;
-    extern const int INVALID_CONFIG_PARAMETER;
     extern const int BAD_ARGUMENTS;
     extern const int NO_ELEMENTS_IN_CONFIG;
 }
