@@ -83,8 +83,6 @@ void writeDirectoryMetadata(
     buf->finalize();
 }
 
-/// Adds the file to the explicit file list of the directory in the snapshot, switching the directory to that form if needed,
-/// and returns the updated directory info to be written to `prefix.path`.
 DirectoryRemoteInfo getDirectoryInfoOrThrow(const FsSnapshot & fs_tree, const NormalizedPath & directory)
 {
     auto info = fs_tree.getDirectoryRemoteInfo(directory);
@@ -93,16 +91,16 @@ DirectoryRemoteInfo getDirectoryInfoOrThrow(const FsSnapshot & fs_tree, const No
     return std::move(*info);
 }
 
-/// The blob is removed only when its last link is gone.
+/// The blob is removed only when its last link is gone. The link count is tracked only for blobs that are referenced,
+/// so the count is not decremented for the removed blob: a new blob may appear under the same key later.
 std::optional<StoredObject> removeLinkAndGetBlobToRemove(
     FsSnapshot & fs_tree, const PlainRewritableLayout & layout, const std::string & blob_key)
 {
-    const bool last_link = fs_tree.getBlobLinkCount(blob_key) == 1;
-    fs_tree.removeBlobLink(blob_key);
+    if (fs_tree.getBlobLinkCount(blob_key) == 1)
+        return StoredObject(layout.constructBlobObjectKey(blob_key));
 
-    if (!last_link)
-        return std::nullopt;
-    return StoredObject(layout.constructBlobObjectKey(blob_key));
+    fs_tree.removeBlobLink(blob_key);
+    return std::nullopt;
 }
 
 }
@@ -562,7 +560,6 @@ void MetadataStorageFromPlainObjectStorageUnlinkMetadataFileOperation::execute()
     object_storage->removeObjectIfExists(StoredObject(remote_source_path));
 
     fs_tree->removeFile(path);
-    fs_tree->removeBlobLink(blob_key);
 }
 
 void MetadataStorageFromPlainObjectStorageUnlinkMetadataFileOperation::undo()
@@ -935,9 +932,8 @@ void MetadataStorageFromPlainObjectStorageRemoveRecursiveOperation::execute()
                 else
                 {
                     LOG_TRACE(log, "Keeping the blob of the file '{}', it is shared with other files", file_path);
+                    fs_tree->removeBlobLink(blob_key);
                 }
-
-                fs_tree->removeBlobLink(blob_key);
             }
         }
 
