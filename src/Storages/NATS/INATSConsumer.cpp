@@ -60,6 +60,11 @@ bool INATSConsumer::hasConnectionReconnected() const
     return connection->getReconnectCount() != connection_reconnect_count;
 }
 
+bool INATSConsumer::isConnectionConnected() const
+{
+    return connection->isConnected();
+}
+
 void INATSConsumer::subscribe()
 {
     if (isSubscribed())

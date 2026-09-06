@@ -130,6 +130,10 @@ protected:
     /// are still valid, but the broker kept nothing of what they were waiting for.
     bool hasConnectionReconnected() const;
 
+    /// True while the client holds an open connection to the broker, as opposed to being in the
+    /// middle of re-establishing one.
+    bool isConnectionConnected() const;
+
     static void onMsg(natsConnection * nc, natsSubscription * sub, natsMsg * msg, void * consumer);
 
     virtual void subscribeImpl() = 0;

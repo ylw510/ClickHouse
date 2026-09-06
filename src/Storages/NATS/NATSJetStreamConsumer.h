@@ -31,9 +31,17 @@ public:
     /// reconnect resends the `SUB` line but not the request, leaving a subscription that still looks
     /// healthy with nothing parked on the broker. JetStream redelivers unacked messages, so
     /// re-subscribing is safe here.
+    /// Reported only while the client is connected. The client lets a subscription be created while
+    /// it is reconnecting: the consumer lookup times out and is tolerated for a bound pull consumer,
+    /// the `SUB` line and the pull request wait in the pending buffer, and the reconnect that then
+    /// completes sends them. Such a subscription is sound, but it was created against a reconnect
+    /// count that predates that reconnect, so it would read as stale once more and be replaced,
+    /// handing back whatever the broker had just delivered to it. Waiting for the connection costs
+    /// nothing: a stale subscription receives nothing in the meantime, and both conditions keep
+    /// reporting until they have been acted on.
     bool needsResubscribe() const override
     {
-        return isSubscribed() && (hasClosedSubscription() || hasConnectionReconnected());
+        return isSubscribed() && isConnectionConnected() && (hasClosedSubscription() || hasConnectionReconnected());
     }
 
 protected:
