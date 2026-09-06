@@ -93,6 +93,23 @@ SELECT count() FROM local_r AS l RIGHT JOIN sqlite('${DB}', query('SELECT id, na
 SELECT count() FROM local_r AS l INNER JOIN sqlite('${DB}', query('SELECT id, name FROM t1')) AS r USING (id) WHERE r.id = 1 SETTINGS external_table_strict_query = 1; -- { serverError INCORRECT_QUERY }
 DROP TABLE local_r;
 
+-- A PREWHERE on a joined table that supports it is never a filter on the source. On the
+-- non-preserving side (and in a FULL JOIN) nothing is pushed down, so the reconstructed query
+-- must drop it together with WHERE instead of presenting it to the guard as a source filter.
+SELECT '-- external_table_strict_query: a PREWHERE on the joined local side is not a filter on the source';
+CREATE TABLE local_mt (id Int64, flag UInt8) ENGINE = MergeTree ORDER BY id;
+INSERT INTO local_mt VALUES (1, 1), (2, 0);
+SELECT count() FROM sqlite('${DB}', query('SELECT id, name FROM t1')) AS l LEFT JOIN local_mt AS r USING (id) PREWHERE r.flag SETTINGS external_table_strict_query = 1;
+SELECT count() FROM local_mt AS l LEFT JOIN sqlite('${DB}', query('SELECT id, name FROM t1')) AS r USING (id) PREWHERE l.flag SETTINGS external_table_strict_query = 1;
+SELECT count() FROM local_mt AS l LEFT JOIN sqlite('${DB}', query('SELECT id, name FROM t1')) AS r USING (id) PREWHERE l.flag SETTINGS external_table_strict_query = 0;
+SELECT count() FROM local_mt AS l FULL JOIN sqlite('${DB}', query('SELECT id, name FROM t1')) AS r USING (id) PREWHERE l.flag = 1 SETTINGS external_table_strict_query = 1;
+SELECT count() FROM local_mt AS l LEFT JOIN sqlite('${DB}', 't1') AS r USING (id) PREWHERE l.flag SETTINGS external_table_strict_query = 1;
+
+SELECT '-- external_table_strict_query: a PREWHERE on the SQLite table itself is rejected by the engine, not by the setting';
+SELECT count() FROM local_mt AS l LEFT JOIN sqlite('${DB}', query('SELECT id, name FROM t1')) AS r USING (id) PREWHERE r.id = 1 SETTINGS external_table_strict_query = 0; -- { serverError ILLEGAL_PREWHERE }
+SELECT count() FROM sqlite('${DB}', 't1') PREWHERE id = 1 SETTINGS external_table_strict_query = 0; -- { serverError ILLEGAL_PREWHERE }
+DROP TABLE local_mt;
+
 SELECT '-- INSERT into a query-backed table function is rejected before schema inference';
 INSERT INTO TABLE FUNCTION sqlite('${DB}', query('SELECT id FROM nonexistent_table')) VALUES (1); -- { serverError INCORRECT_QUERY }
 
