@@ -1,5 +1,6 @@
 #include <Disks/DiskObjectStorage/MetadataStorages/PlainRewritable/MetadataStorageFromPlainRewritableObjectStorageOperations.h>
 #include <Disks/DiskObjectStorage/MetadataStorages/PlainRewritable/Metadata/FsSnapshot.h>
+#include <Disks/DiskObjectStorage/MetadataStorages/PlainRewritable/Metadata/PrefixPath.h>
 #include <Disks/DiskObjectStorage/MetadataStorages/PlainRewritable/PlainRewritableLayout.h>
 #include <Disks/DiskObjectStorage/MetadataStorages/PlainRewritable/Transactions/Preconditions.h>
 #include <Disks/DiskObjectStorage/MetadataStorages/NormalizedPath.h>
@@ -43,6 +44,82 @@ namespace FailPoints
     extern const char plain_object_storage_copy_fail_on_file_move[];
     extern const char plain_object_storage_copy_temp_source_file_fail_on_file_move[];
     extern const char plain_object_storage_copy_temp_target_file_fail_on_file_move[];
+}
+
+namespace
+{
+
+/// The logical path of a directory as it is written to `prefix.path`.
+std::string getLogicalDirectoryPath(const NormalizedPath & directory)
+{
+    if (directory.empty())
+        return "/";
+    return directory.string() + "/";
+}
+
+/// Rewrites the `prefix.path` object of a directory with the given contents.
+void writeDirectoryMetadata(
+    IObjectStorage & object_storage,
+    const PlainRewritableLayout & layout,
+    const NormalizedPath & directory,
+    const DirectoryRemoteInfo & info)
+{
+    auto metadata_object_key = layout.constructDirectoryObjectKey(info.remote_path);
+    LOG_TRACE(
+        getLogger("MetadataStorageFromPlainRewritableObjectStorage"),
+        "Rewriting metadata for directory '{}' with remote path='{}', {} files listed explicitly",
+        directory.string(),
+        metadata_object_key,
+        info.has_explicit_file_list ? info.files.size() : 0);
+
+    auto buf = object_storage.writeObject(
+        StoredObject(metadata_object_key, directory.string()),
+        WriteMode::Rewrite,
+        /*object_attributes*/ std::nullopt,
+        /*buf_size*/ 128,
+        /*settings*/ getWriteSettings());
+
+    writeString(serializePrefixPath(getLogicalDirectoryPath(directory), info), *buf);
+    buf->finalize();
+}
+
+/// Adds the file to the explicit file list of the directory in the snapshot, switching the directory to that form if needed,
+/// and returns the updated directory info to be written to `prefix.path`.
+DirectoryRemoteInfo getDirectoryInfoOrThrow(const FsSnapshot & fs_tree, const NormalizedPath & directory)
+{
+    auto info = fs_tree.getDirectoryRemoteInfo(directory);
+    if (!info)
+        throw Exception(ErrorCodes::LOGICAL_ERROR, "Directory '{}' does not exist or is virtual", directory.string());
+    return std::move(*info);
+}
+
+/// The blob is removed only when its last link is gone.
+std::optional<StoredObject> removeLinkAndGetBlobToRemove(
+    FsSnapshot & fs_tree, const PlainRewritableLayout & layout, const std::string & blob_key)
+{
+    const bool last_link = fs_tree.getBlobLinkCount(blob_key) == 1;
+    fs_tree.removeBlobLink(blob_key);
+
+    if (!last_link)
+        return std::nullopt;
+    return StoredObject(layout.constructBlobObjectKey(blob_key));
+}
+
+}
+
+bool isMetadataOnlyMove(
+    const FsSnapshot & fs_tree,
+    const DirectoryRemoteInfo & directory_from,
+    const DirectoryRemoteInfo & directory_to,
+    const std::string & blob_key_from,
+    const std::optional<std::string> & blob_key_of_existing_target)
+{
+    /// A directory with the implicit file list cannot lose a file whose blob stays under its prefix (the blob would be discovered
+    /// as a file again), nor gain a file whose blob lives elsewhere. And a shared blob cannot be moved or overwritten.
+    return directory_from.has_explicit_file_list
+        || directory_to.has_explicit_file_list
+        || fs_tree.getBlobLinkCount(blob_key_from) > 1
+        || (blob_key_of_existing_target && fs_tree.getBlobLinkCount(*blob_key_of_existing_target) > 1);
 }
 
 MetadataStorageFromPlainObjectStorageValidatePreconditionsOperation::MetadataStorageFromPlainObjectStorageValidatePreconditionsOperation(
@@ -157,14 +234,14 @@ MetadataStorageFromPlainObjectStorageMoveDirectoryOperation::MetadataStorageFrom
 }
 
 std::unique_ptr<WriteBufferFromFileBase> MetadataStorageFromPlainObjectStorageMoveDirectoryOperation::createWriteBuf(
-    const DirectoryRemoteInfo & remote_info, std::optional<std::string> expected_content)
+    const DirectoryRemoteInfo & remote_info, std::optional<std::string> expected_logical_path)
 {
     auto metadata_object_key = layout->constructDirectoryObjectKey(remote_info.remote_path);
     StoredObject metadata_object(metadata_object_key);
 
-    if (expected_content)
+    if (expected_logical_path)
     {
-        chassert(expected_content.value().ends_with('/'));
+        chassert(expected_logical_path.value().ends_with('/'));
         LockMemoryExceptionInThread temporarily_lock_exceptions;
 
         std::string data;
@@ -173,13 +250,17 @@ std::unique_ptr<WriteBufferFromFileBase> MetadataStorageFromPlainObjectStorageMo
 
         auto read_buf = object_storage->readObject(metadata_object, read_settings);
         readStringUntilEOF(data, *read_buf);
-        if (data != expected_content.value())
+        const auto parsed = parsePrefixPath(data);
+        if (normalizePath(parsed.logical_path) != normalizePath(expected_logical_path.value())
+            || parsed.has_explicit_file_list != remote_info.has_explicit_file_list)
             throw Exception(
                 ErrorCodes::INCORRECT_DATA,
-                "Incorrect data for object key {}, expected {}, got {}",
+                "Incorrect data for object key {}, expected logical path {} (explicit file list: {}), got {} (explicit file list: {})",
                 metadata_object_key,
-                expected_content.value(),
-                data);
+                expected_logical_path.value(),
+                remote_info.has_explicit_file_list,
+                parsed.logical_path,
+                parsed.has_explicit_file_list);
     }
 
     auto write_buf = object_storage->writeObject(
@@ -192,11 +273,12 @@ std::unique_ptr<WriteBufferFromFileBase> MetadataStorageFromPlainObjectStorageMo
     return write_buf;
 }
 
-void MetadataStorageFromPlainObjectStorageMoveDirectoryOperation::rewriteSingleDirectory(const std::filesystem::path & from, const std::filesystem::path & to, WriteBuffer & buffer)
+void MetadataStorageFromPlainObjectStorageMoveDirectoryOperation::rewriteSingleDirectory(
+    const std::filesystem::path & from, const std::filesystem::path & to, const DirectoryRemoteInfo & remote_info, WriteBuffer & buffer)
 {
     LOG_TRACE(getLogger("MetadataStorageFromPlainObjectStorageMoveDirectoryOperation"), "Rewriting '{}' to '{}'", from, to);
 
-    writeString(to.string(), buffer);
+    writeString(serializePrefixPath(to.string(), remote_info), buffer);
 
     fiu_do_on(FailPoints::plain_object_storage_write_fail_on_directory_move,
     {
@@ -236,10 +318,10 @@ void MetadataStorageFromPlainObjectStorageMoveDirectoryOperation::execute()
             continue;
         }
 
-        auto write_buf = createWriteBuf(remote_info.value(), /*expected_content*/validate_content ? std::make_optional(sub_path_from) : std::nullopt);
+        auto write_buf = createWriteBuf(remote_info.value(), /*expected_logical_path*/validate_content ? std::make_optional(sub_path_from) : std::nullopt);
 
         changed_paths.insert(sub_path_from);
-        rewriteSingleDirectory(sub_path_from, sub_path_to, *write_buf);
+        rewriteSingleDirectory(sub_path_from, sub_path_to, remote_info.value(), *write_buf);
     }
 
     fs_tree->moveDirectory(path_from, path_to);
@@ -257,8 +339,8 @@ void MetadataStorageFromPlainObjectStorageMoveDirectoryOperation::undo()
         if (!changed_paths.contains(sub_path_from))
             continue;
 
-        auto write_buf = createWriteBuf(remote_info.value(), /*expected_content*/std::nullopt);
-        rewriteSingleDirectory(sub_path_to, sub_path_from, *write_buf);
+        auto write_buf = createWriteBuf(remote_info.value(), /*expected_logical_path*/std::nullopt);
+        rewriteSingleDirectory(sub_path_to, sub_path_from, remote_info.value(), *write_buf);
     }
 }
 
@@ -316,35 +398,103 @@ void MetadataStorageFromPlainObjectStorageRemoveDirectoryOperation::undo()
         /*object_attributes*/ std::nullopt,
         /*buf_size*/ 128,
         /*settings*/ DB::getWriteSettings());
-    writeString(path.string(), *buf);
+    writeString(serializePrefixPath(path.string(), info), *buf);
     buf->finalize();
 }
 
 MetadataStorageFromPlainObjectStorageWriteFileOperation::MetadataStorageFromPlainObjectStorageWriteFileOperation(
     std::string path_,
     StoredObject object_,
+    std::string blob_key_,
     std::shared_ptr<FsSnapshot> fs_tree_,
     std::shared_ptr<IObjectStorage> object_storage_,
     std::shared_ptr<PlainRewritableLayout> layout_,
-    std::shared_ptr<PlainRewritableMetrics> metrics_)
+    std::shared_ptr<PlainRewritableMetrics> metrics_,
+    StoredObjects & removed_objects_)
     : path(std::move(path_))
     , object(std::move(object_))
+    , blob_key(std::move(blob_key_))
     , fs_tree(std::move(fs_tree_))
     , object_storage(std::move(object_storage_))
     , layout(std::move(layout_))
     , metrics(std::move(metrics_))
+    , removed_objects(removed_objects_)
 {
     chassert(metrics);
 }
 
 void MetadataStorageFromPlainObjectStorageWriteFileOperation::execute()
 {
-    LOG_TEST(getLogger("MetadataStorageFromPlainObjectStorageWriteFileOperation"), "Creating metadata for a file '{}', size: {}", path, object.bytes_size);
+    LOG_TEST(getLogger("MetadataStorageFromPlainObjectStorageWriteFileOperation"), "Creating metadata for a file '{}', size: {}, blob key: '{}'", path, object.bytes_size, blob_key);
 
-    if (fs_tree->existsFile(path))
+    const auto normalized_path = normalizePath(path);
+    const auto directory = normalized_path.parent_path();
+    const auto file_name = normalized_path.filename().string();
+
+    auto directory_info = getDirectoryInfoOrThrow(*fs_tree, directory);
+    const std::string default_blob_key = getDefaultBlobKey(directory_info.remote_path, file_name);
+    const bool default_location = blob_key.empty() || blob_key == default_blob_key;
+
+    /// The object key was chosen when the write started, based on the state of the directory at that moment.
+    /// A blob written to the default location may clobber a blob still shared with other files if the directory
+    /// has changed since then; this is not expected for MergeTree, but must not go unnoticed.
+    if (default_location && directory_info.has_explicit_file_list)
+        throw Exception(
+            ErrorCodes::INCORRECT_DATA,
+            "Directory '{}' has switched to the explicit file list concurrently, the blob of the file '{}' cannot be stored at the default location",
+            directory.string(),
+            path);
+
+    if (const auto it = directory_info.files.find(file_name); it != directory_info.files.end())
+    {
+        const auto existing_blob_key = getBlobKey(directory_info, file_name, it->second);
+        if (default_location)
+        {
+            /// The blob has been overwritten in place, which is only correct if no other file shares it.
+            if (fs_tree->getBlobLinkCount(existing_blob_key) != 1)
+                throw Exception(
+                    ErrorCodes::INCORRECT_DATA,
+                    "File '{}' has been hard-linked concurrently, its blob cannot be overwritten in place",
+                    path);
+        }
+        else if (existing_blob_key != blob_key)
+        {
+            replaced_blob = removeLinkAndGetBlobToRemove(*fs_tree, *layout, existing_blob_key);
+        }
+
         fs_tree->removeFile(path);
+    }
 
-    fs_tree->recordFile(path, {object.bytes_size, std::time(nullptr)});
+    fs_tree->recordFile(path, FileRemoteInfo{.bytes_size = object.bytes_size, .last_modified = std::time(nullptr), .blob_key = default_location ? "" : blob_key});
+
+    if (default_location)
+        return;
+
+    /// A blob outside of the default location must be listed in `prefix.path`.
+    previous_directory_info = directory_info;
+    fs_tree->markDirectoryExplicit(directory);
+
+    prefix_path_written = true;
+    writeDirectoryMetadata(*object_storage, *layout, directory, getDirectoryInfoOrThrow(*fs_tree, directory));
+}
+
+void MetadataStorageFromPlainObjectStorageWriteFileOperation::undo()
+{
+    if (!prefix_path_written)
+        return;
+
+    LOG_TRACE(getLogger("MetadataStorageFromPlainObjectStorageWriteFileOperation"), "Reversing the metadata rewrite for the directory of '{}'", path);
+    writeDirectoryMetadata(*object_storage, *layout, normalizePath(path).parent_path(), previous_directory_info.value());
+}
+
+void MetadataStorageFromPlainObjectStorageWriteFileOperation::finalize()
+{
+    if (!replaced_blob)
+        return;
+
+    LOG_TRACE(getLogger("MetadataStorageFromPlainObjectStorageWriteFileOperation"), "Removing the replaced blob '{}' of the file '{}'", replaced_blob->remote_path, path);
+    object_storage->removeObjectIfExists(*replaced_blob);
+    removed_objects.push_back(*replaced_blob);
 }
 
 MetadataStorageFromPlainObjectStorageUnlinkMetadataFileOperation::MetadataStorageFromPlainObjectStorageUnlinkMetadataFileOperation(
@@ -381,9 +531,28 @@ void MetadataStorageFromPlainObjectStorageUnlinkMetadataFileOperation::execute()
         throw Exception(ErrorCodes::FILE_DOESNT_EXIST, "File '{}' does not exist", path);
     }
 
-    const auto normalized_path_from = normalizePath(path);
-    const auto directory_remote_path_from = fs_tree->getDirectoryRemoteInfo(normalized_path_from.parent_path())->remote_path;
-    remote_source_path = layout->constructFileObjectKey(directory_remote_path_from, normalized_path_from.filename());
+    const auto normalized_path = normalizePath(path);
+    const auto directory = normalized_path.parent_path();
+    const auto file_name = normalized_path.filename().string();
+
+    auto directory_info = getDirectoryInfoOrThrow(*fs_tree, directory);
+    const auto blob_key = getBlobKey(directory_info, file_name, directory_info.files.at(file_name));
+
+    if (directory_info.has_explicit_file_list || fs_tree->getBlobLinkCount(blob_key) > 1)
+    {
+        /// The file is dropped from the explicit file list; the blob stays until the last link is gone, and is removed after the commit.
+        previous_directory_info = directory_info;
+
+        fs_tree->removeFile(path);
+        blob_to_remove = removeLinkAndGetBlobToRemove(*fs_tree, *layout, blob_key);
+        fs_tree->markDirectoryExplicit(directory);
+
+        prefix_path_written = true;
+        writeDirectoryMetadata(*object_storage, *layout, directory, getDirectoryInfoOrThrow(*fs_tree, directory));
+        return;
+    }
+
+    remote_source_path = layout->constructBlobObjectKey(blob_key);
     remote_tmp_path = layout->constructFileObjectKey(PlainRewritableLayout::ROOT_DIRECTORY_TOKEN, getRandomASCIIString(16));
 
     copy_started = true;
@@ -393,10 +562,18 @@ void MetadataStorageFromPlainObjectStorageUnlinkMetadataFileOperation::execute()
     object_storage->removeObjectIfExists(StoredObject(remote_source_path));
 
     fs_tree->removeFile(path);
+    fs_tree->removeBlobLink(blob_key);
 }
 
 void MetadataStorageFromPlainObjectStorageUnlinkMetadataFileOperation::undo()
 {
+    if (prefix_path_written)
+    {
+        LOG_TRACE(getLogger("MetadataStorageFromPlainObjectStorageUnlinkMetadataFileOperation"), "Reversing the metadata rewrite for the directory of '{}'", path);
+        writeDirectoryMetadata(*object_storage, *layout, normalizePath(path).parent_path(), previous_directory_info.value());
+        return;
+    }
+
     if (!copy_started)
         return;
 
@@ -408,13 +585,21 @@ void MetadataStorageFromPlainObjectStorageUnlinkMetadataFileOperation::undo()
 
 void MetadataStorageFromPlainObjectStorageUnlinkMetadataFileOperation::finalize()
 {
-    removed_objects.push_back(StoredObject(remote_source_path));
+    if (blob_to_remove)
+    {
+        LOG_TRACE(getLogger("MetadataStorageFromPlainObjectStorageUnlinkMetadataFileOperation"), "Removing the blob '{}' of the unlinked file '{}'", blob_to_remove->remote_path, path);
+        object_storage->removeObjectIfExists(*blob_to_remove);
+        removed_objects.push_back(*blob_to_remove);
+    }
 
     if (copy_started)
+    {
+        removed_objects.push_back(StoredObject(remote_source_path));
         object_storage->removeObjectIfExists(StoredObject(remote_tmp_path));
+    }
 }
 
-MetadataStorageFromPlainObjectStorageCopyFileOperation::MetadataStorageFromPlainObjectStorageCopyFileOperation(
+MetadataStorageFromPlainObjectStorageHardLinkOperation::MetadataStorageFromPlainObjectStorageHardLinkOperation(
     std::filesystem::path path_from_,
     std::filesystem::path path_to_,
     std::shared_ptr<FsSnapshot> fs_tree_,
@@ -431,9 +616,9 @@ MetadataStorageFromPlainObjectStorageCopyFileOperation::MetadataStorageFromPlain
     chassert(metrics);
 }
 
-void MetadataStorageFromPlainObjectStorageCopyFileOperation::execute()
+void MetadataStorageFromPlainObjectStorageHardLinkOperation::execute()
 {
-    LOG_TEST(getLogger("MetadataStorageFromPlainObjectStorageCopyFileOperation"), "Copying file from '{}' to '{}'", path_from, path_to);
+    LOG_TEST(getLogger("MetadataStorageFromPlainObjectStorageHardLinkOperation"), "Creating hard link '{}' to '{}'", path_to, path_from);
 
     if (!fs_tree->existsFile(path_from))
         throw Exception(ErrorCodes::FILE_DOESNT_EXIST, "Metadata object for the source path '{}' does not exist", path_from);
@@ -445,30 +630,28 @@ void MetadataStorageFromPlainObjectStorageCopyFileOperation::execute()
         throw Exception(ErrorCodes::FILE_ALREADY_EXISTS, "Target file '{}' already exists", path_to);
 
     const auto normalized_path_from = normalizePath(path_from);
-    const auto directory_remote_path_from = fs_tree->getDirectoryRemoteInfo(normalized_path_from.parent_path())->remote_path;
-    remote_path_from = layout->constructFileObjectKey(directory_remote_path_from, normalized_path_from.filename());
+    const auto directory_info_from = getDirectoryInfoOrThrow(*fs_tree, normalized_path_from.parent_path());
+    const auto & file_info_from = directory_info_from.files.at(normalized_path_from.filename());
+    const auto blob_key = getBlobKey(directory_info_from, normalized_path_from.filename(), file_info_from);
 
-    const auto normalized_path_to = normalizePath(path_to);
-    const auto directory_remote_path_to = fs_tree->getDirectoryRemoteInfo(normalized_path_to.parent_path())->remote_path;
-    remote_path_to = layout->constructFileObjectKey(directory_remote_path_to, normalized_path_to.filename());
+    const auto directory_to = normalizePath(path_to).parent_path();
+    previous_directory_info = getDirectoryInfoOrThrow(*fs_tree, directory_to);
 
-    copy_attempted = true;
-    object_storage->copyObject(StoredObject(remote_path_from), StoredObject(remote_path_to), getReadSettings(), getWriteSettings());
-    fs_tree->recordFile(path_to, fs_tree->getFileRemoteInfo(path_from).value());
+    fs_tree->recordFile(path_to, FileRemoteInfo{.bytes_size = file_info_from.bytes_size, .last_modified = file_info_from.last_modified, .blob_key = blob_key});
+    fs_tree->addBlobLink(blob_key);
+    fs_tree->markDirectoryExplicit(directory_to);
+
+    prefix_path_written = true;
+    writeDirectoryMetadata(*object_storage, *layout, directory_to, getDirectoryInfoOrThrow(*fs_tree, directory_to));
 }
 
-void MetadataStorageFromPlainObjectStorageCopyFileOperation::undo()
+void MetadataStorageFromPlainObjectStorageHardLinkOperation::undo()
 {
-    if (!copy_attempted)
+    if (!prefix_path_written)
         return;
 
-    LOG_WARNING(
-        getLogger("MetadataStorageFromPlainObjectStorageCopyFileOperation"),
-        "Removing file '{}' that was copied from '{}",
-        path_to,
-        path_from);
-
-    object_storage->removeObjectIfExists(StoredObject(remote_path_to));
+    LOG_TRACE(getLogger("MetadataStorageFromPlainObjectStorageHardLinkOperation"), "Reversing the hard link '{}' to '{}'", path_to, path_from);
+    writeDirectoryMetadata(*object_storage, *layout, normalizePath(path_to).parent_path(), previous_directory_info.value());
 }
 
 MetadataStorageFromPlainObjectStorageMoveFileOperation::MetadataStorageFromPlainObjectStorageMoveFileOperation(
@@ -510,14 +693,55 @@ void MetadataStorageFromPlainObjectStorageMoveFileOperation::execute()
 
     const auto normalized_path_from = normalizePath(path_from);
     const auto normalized_path_to = normalizePath(path_to);
-    const auto directory_remote_path_from = fs_tree->getDirectoryRemoteInfo(normalized_path_from.parent_path())->remote_path;
-    const auto directory_remote_path_to = fs_tree->getDirectoryRemoteInfo(normalized_path_to.parent_path())->remote_path;
+    const auto directory_from = normalized_path_from.parent_path();
+    const auto directory_to = normalized_path_to.parent_path();
+    const auto directory_info_from = getDirectoryInfoOrThrow(*fs_tree, directory_from);
+    const auto directory_info_to = getDirectoryInfoOrThrow(*fs_tree, directory_to);
 
-    remote_path_from = layout->constructFileObjectKey(directory_remote_path_from, normalized_path_from.filename());
-    remote_path_to = layout->constructFileObjectKey(directory_remote_path_to, normalized_path_to.filename());
+    file_from_remote_info = directory_info_from.files.at(normalized_path_from.filename());
+    const auto blob_key_from = getBlobKey(directory_info_from, normalized_path_from.filename(), file_from_remote_info.value());
+
+    std::optional<std::string> blob_key_of_existing_target;
+    if (const auto it = directory_info_to.files.find(normalized_path_to.filename()); it != directory_info_to.files.end())
+        blob_key_of_existing_target = getBlobKey(directory_info_to, normalized_path_to.filename(), it->second);
+
+    if (isMetadataOnlyMove(*fs_tree, directory_info_from, directory_info_to, blob_key_from, blob_key_of_existing_target))
+    {
+        metadata_only_move = true;
+        previous_directory_info_from = directory_info_from;
+        previous_directory_info_to = directory_info_to;
+
+        if (blob_key_of_existing_target)
+        {
+            if (!replaceable)
+                throw Exception(ErrorCodes::FILE_ALREADY_EXISTS, "Target file '{}' already exists", path_to);
+
+            fs_tree->removeFile(path_to);
+            replaced_blob = removeLinkAndGetBlobToRemove(*fs_tree, *layout, *blob_key_of_existing_target);
+        }
+
+        /// The blob stays in place, only the file lists change.
+        fs_tree->removeFile(path_from);
+        fs_tree->recordFile(path_to, FileRemoteInfo{.bytes_size = file_from_remote_info->bytes_size, .last_modified = file_from_remote_info->last_modified, .blob_key = blob_key_from});
+        fs_tree->markDirectoryExplicit(directory_to);
+        fs_tree->markDirectoryExplicit(directory_from);
+
+        prefix_path_written_to = true;
+        writeDirectoryMetadata(*object_storage, *layout, directory_to, getDirectoryInfoOrThrow(*fs_tree, directory_to));
+
+        if (directory_from != directory_to)
+        {
+            prefix_path_written_from = true;
+            writeDirectoryMetadata(*object_storage, *layout, directory_from, getDirectoryInfoOrThrow(*fs_tree, directory_from));
+        }
+
+        return;
+    }
+
+    remote_path_from = layout->constructFileObjectKey(directory_info_from.remote_path, normalized_path_from.filename());
+    remote_path_to = layout->constructFileObjectKey(directory_info_to.remote_path, normalized_path_to.filename());
     tmp_remote_path_from = layout->constructFileObjectKey(PlainRewritableLayout::ROOT_DIRECTORY_TOKEN, getRandomASCIIString(16));
     tmp_remote_path_to = layout->constructFileObjectKey(PlainRewritableLayout::ROOT_DIRECTORY_TOKEN, getRandomASCIIString(16));
-    file_from_remote_info = fs_tree->getFileRemoteInfo(path_from).value();
     const auto read_settings = getReadSettingsForMetadata();
     const auto write_settings = getWriteSettingsForMetadata();
 
@@ -575,6 +799,19 @@ void MetadataStorageFromPlainObjectStorageMoveFileOperation::execute()
 
 void MetadataStorageFromPlainObjectStorageMoveFileOperation::undo()
 {
+    if (metadata_only_move)
+    {
+        LOG_TRACE(getLogger("MetadataStorageFromPlainObjectStorageMoveFileOperation"), "Reversing the metadata rewrite for the move from '{}' to '{}'", path_from, path_to);
+
+        if (prefix_path_written_to)
+            writeDirectoryMetadata(*object_storage, *layout, normalizePath(path_to).parent_path(), previous_directory_info_to.value());
+
+        if (prefix_path_written_from)
+            writeDirectoryMetadata(*object_storage, *layout, normalizePath(path_from).parent_path(), previous_directory_info_from.value());
+
+        return;
+    }
+
     const auto read_settings = getReadSettings();
     const auto write_settings = getWriteSettings();
 
@@ -615,6 +852,18 @@ void MetadataStorageFromPlainObjectStorageMoveFileOperation::undo()
 
 void MetadataStorageFromPlainObjectStorageMoveFileOperation::finalize()
 {
+    if (metadata_only_move)
+    {
+        if (replaced_blob)
+        {
+            LOG_TRACE(getLogger("MetadataStorageFromPlainObjectStorageMoveFileOperation"), "Removing the blob '{}' of the replaced file '{}'", replaced_blob->remote_path, path_to);
+            object_storage->removeObjectIfExists(*replaced_blob);
+            removed_objects.push_back(*replaced_blob);
+        }
+
+        return;
+    }
+
     removed_objects.push_back(StoredObject(remote_path_from));
 
     if (moved_existing_source_file)
@@ -657,7 +906,41 @@ void MetadataStorageFromPlainObjectStorageRemoveRecursiveOperation::execute()
         move_tried = true;
         move_to_tmp_op->execute();
 
-        subtree_remote_info = fs_tree->getSubtreeRemoteInfo(tmp_path);
+        for (const auto & [subdir, remote_info] : fs_tree->getSubtreeRemoteInfo(tmp_path))
+        {
+            auto subdir_path = tmp_path / subdir;
+
+            if (!remote_info.has_value())
+            {
+                LOG_TRACE(log, "Directory '{}' is virtual, will not cleanup remote", subdir_path);
+                continue;
+            }
+
+            LOG_TRACE(log, "Removing directory '{}'", subdir_path);
+
+            auto metadata_object_key = layout->constructDirectoryObjectKey(remote_info->remote_path);
+            objects_to_remove.emplace_back(metadata_object_key, path);
+
+            /// We also need to remove all files inside each of the subdirectories, but only the blobs that are not shared with files outside.
+            for (const auto & [filename, file_info] : remote_info->files)
+            {
+                auto file_path = subdir_path / filename;
+                const auto blob_key = getBlobKey(remote_info.value(), filename, file_info);
+
+                if (fs_tree->getBlobLinkCount(blob_key) == 1)
+                {
+                    LOG_TRACE(log, "Removing file '{}'", file_path);
+                    objects_to_remove.emplace_back(layout->constructBlobObjectKey(blob_key), file_path);
+                }
+                else
+                {
+                    LOG_TRACE(log, "Keeping the blob of the file '{}', it is shared with other files", file_path);
+                }
+
+                fs_tree->removeBlobLink(blob_key);
+            }
+        }
+
         fs_tree->removeDirectory(tmp_path);
     }
 }
@@ -674,34 +957,6 @@ void MetadataStorageFromPlainObjectStorageRemoveRecursiveOperation::finalize()
 {
     if (!move_tried)
         return;
-
-    StoredObjects objects_to_remove;
-    for (const auto & [subdir, remote_info] : subtree_remote_info)
-    {
-        auto subdir_path = tmp_path / subdir;
-
-        if (!remote_info.has_value())
-        {
-            LOG_TRACE(log, "Directory '{}' is virtual, will not cleanup remote", subdir_path);
-            continue;
-        }
-
-        LOG_TRACE(log, "Removing directory '{}'", subdir_path);
-
-        auto metadata_object_key = layout->constructDirectoryObjectKey(remote_info->remote_path);
-        objects_to_remove.emplace_back(metadata_object_key, path);
-
-        /// We also need to remove all files inside each of the subdirectories.
-        for (const auto & [filename, file_info] : remote_info->files)
-        {
-            auto file_path = subdir_path / filename;
-
-            LOG_TRACE(log, "Removing file '{}'", file_path);
-
-            auto file_object_key = layout->constructFileObjectKey(remote_info->remote_path, filename);
-            objects_to_remove.emplace_back(file_object_key, file_path);
-        }
-    }
 
     object_storage->removeObjectsIfExist(objects_to_remove);
     removed_objects.append_range(objects_to_remove);

@@ -122,6 +122,7 @@ namespace MergeTreeSetting
     extern const MergeTreeSettingsMergeTreePatchPartsVersion patch_parts_version;
     extern const MergeTreeSettingsBool always_use_copy_instead_of_hardlinks;
     extern const MergeTreeSettingsBool assign_part_uuids;
+    extern const MergeTreeSettingsBool table_disk;
     extern const MergeTreeSettingsDeduplicateMergeProjectionMode deduplicate_merge_projection_mode;
     extern const MergeTreeSettingsBool enable_replacing_merge_with_cleanup_for_min_age_to_force_merge;
     extern const MergeTreeSettingsUInt64 finished_mutations_to_keep;
@@ -453,49 +454,36 @@ void StorageMergeTree::drop()
 {
     shutdown(true);
 
-    /// Remove mutation files before dropAllData(). For `table_disk` tables the relative path is empty
-    /// (data lives at the disk root), so leftover `mutation_*.txt` must be deleted explicitly —
-    /// otherwise a later attach on the same endpoint can resurrect stale mutations.
-    {
-        std::vector<MergeTreeMutationEntry> mutations_to_delete;
-        {
-            std::lock_guard lock(currently_processing_in_background_mutex);
-            for (auto & [version, entry] : current_mutations_by_version)
-            {
-                if (!entry.is_done)
-                    decrementMutationsCounters(mutation_counters, *entry.commands);
-                mutations_to_delete.push_back(std::move(entry));
-            }
-            current_mutations_by_version.clear();
-        }
-
-        for (auto & mutation : mutations_to_delete)
-        {
-            LOG_TRACE(log, "Removing mutation on drop: {}", mutation.file_name);
-            mutation.removeFile();
-        }
-
-        for (const auto & disk : getDisks())
-        {
-            if (disk->isBroken() || disk->isReadOnly())
-                continue;
-
-            if (!relative_data_path.empty() && !disk->existsDirectory(relative_data_path))
-                continue;
-
-            for (auto it = disk->iterateDirectory(relative_data_path); it->isValid(); it->next())
-            {
-                const auto & name = it->name();
-                if (name.starts_with("mutation_") && name.ends_with(".txt"))
-                {
-                    LOG_TRACE(log, "Removing leftover mutation file on drop: {}", name);
-                    disk->removeFileIfExists((fs::path(relative_data_path) / name).string());
-                }
-            }
-        }
-    }
+    /// With the `table_disk` setting the table directory is the root of the disk, which `dropAllData` cannot remove
+    /// recursively (see `MetadataStorageFromPlainObjectStorageRemoveRecursiveOperation`), so the mutation files stored
+    /// there would survive the drop and get loaded by the next table created on the same disk.
+    if ((*getSettings())[MergeTreeSetting::table_disk])
+        removeMutationFilesOnDrop();
 
     dropAllData();
+}
+
+void StorageMergeTree::removeMutationFilesOnDrop()
+{
+    for (const auto & disk : getDisks())
+    {
+        if (disk->isBroken() || disk->isReadOnly())
+            continue;
+
+        size_t removed_count = 0;
+        for (auto it = disk->iterateDirectory(relative_data_path); it->isValid(); it->next())
+        {
+            if (startsWith(it->name(), "mutation_") || startsWith(it->name(), "tmp_mutation_"))
+            {
+                LOG_DEBUG(log, "Removing mutation file {} on drop", it->path());
+                disk->removeFile(it->path());
+                ++removed_count;
+            }
+        }
+
+        if (removed_count > 0)
+            LOG_INFO(log, "Removed {} mutation files from disk {} on drop", removed_count, disk->getName());
+    }
 }
 
 void StorageMergeTree::alter(

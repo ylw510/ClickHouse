@@ -149,6 +149,19 @@ void UncommittedState::moveDirectory(const std::string & path_from, const std::s
     tx_snapshot->moveDirectory(path_from, path_to);
 }
 
+void UncommittedState::markDirectoryExplicit(const std::string & path)
+{
+    if (!tx_snapshot->getDirectoryRemoteInfo(path))
+        return;
+
+    tx_snapshot->markDirectoryExplicit(path);
+}
+
+void UncommittedState::addBlobLink(const std::string & blob_key)
+{
+    tx_snapshot->addBlobLink(blob_key);
+}
+
 std::optional<DirectoryRemoteInfo> UncommittedState::getDirectoryRemoteInfo(const std::string & path) const
 {
     return tx_snapshot->getDirectoryRemoteInfo(path);

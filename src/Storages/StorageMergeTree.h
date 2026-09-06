@@ -188,6 +188,7 @@ private:
     const bool support_transaction;
 
     void loadMutations();
+    void removeMutationFilesOnDrop();
 
     /// Load and initialize deduplication logs. Even if deduplication setting
     /// equals zero creates object with deduplication window equals zero.

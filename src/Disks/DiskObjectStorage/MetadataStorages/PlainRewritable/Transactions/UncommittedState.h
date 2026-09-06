@@ -20,7 +20,14 @@ public:
     void removeDirectory(const std::string & path);
     void moveDirectory(const std::string & path_from, const std::string & path_to);
 
+    /// File operations are not replayed on the uncommitted state, except for the facts that affect
+    /// the choice of object keys for new blobs: the directories that are going to get an explicit file list
+    /// and the blobs that are going to be shared.
+    void markDirectoryExplicit(const std::string & path);
+    void addBlobLink(const std::string & blob_key);
+
     std::optional<DirectoryRemoteInfo> getDirectoryRemoteInfo(const std::string & path) const;
+    const FsSnapshot & getSnapshot() const { return *tx_snapshot; }
     std::shared_ptr<Preconditions> getTxPreconditions() const;
 
 private:

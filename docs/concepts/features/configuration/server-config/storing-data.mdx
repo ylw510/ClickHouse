@@ -412,15 +412,21 @@ Configuration:
 A new disk type `s3_plain_rewritable` was introduced in `24.4`.
 Similar to the `s3_plain` disk type, it does not require additional storage for 
 metadata files. Instead, metadata is stored in S3.
-Unlike the `s3_plain` disk type, `s3_plain_rewritable` allows executing merges 
-and supports `INSERT` operations.
-[Mutations](/reference/statements/alter/index#mutations) and replication of tables are not supported.
+Unlike the `s3_plain` disk type, `s3_plain_rewritable` allows executing merges,
+supports `INSERT` operations, `ALTER` operations, and
+[mutations](/reference/statements/alter/index#mutations).
+Replication of tables is not supported.
+
+Mutations and `ALTER` operations rely on hard links between files. A hard link
+makes the metadata of a directory list its files explicitly, together with the
+keys of the objects storing them. Servers older than the version that introduced
+hard links cannot read such directories, while directories that never had hard
+links keep the previous layout and remain readable by older servers.
 
 A use case for this disk type is for non-replicated `MergeTree` tables. Although 
 the `s3` disk type is suitable for non-replicated `MergeTree` tables, you may opt
 for the `s3_plain_rewritable` disk type if you do not require local metadata 
-for the table and are willing to accept a limited set of operations. This could
-be useful, for example, for system tables.
+for the table. This could be useful, for example, for system tables.
 
 Configuration:
 
