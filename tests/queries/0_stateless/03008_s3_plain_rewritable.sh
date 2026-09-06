@@ -56,6 +56,7 @@ settings disk = disk(
     endpoint = 'http://localhost:11111/test/03008_test_s3_mt/',
     access_key_id = clickhouse,
     secret_access_key = clickhouse);
+alter table test_s3_mt_dst add projection test_s3_mt_projection (select * order by b);
 "
 
 ${CLICKHOUSE_CLIENT} -m --query "
