@@ -2,7 +2,6 @@
 #include <Disks/DiskObjectStorage/ObjectStorages/IObjectStorage.h>
 #include <Disks/DiskObjectStorage/ObjectStorages/Local/LocalObjectStorage.h>
 #include <Disks/DiskObjectStorage/MetadataStorages/PlainRewritable/MetadataStorageFromPlainRewritableObjectStorage.h>
-#include <Disks/DiskObjectStorage/MetadataStorages/PlainRewritable/PlainRewritablePrefixPath.h>
 #include <Disks/DiskObjectStorage/ObjectStorages/StoredObject.h>
 #include <Disks/WriteMode.h>
 
@@ -626,6 +625,40 @@ TEST_F(MetadataPlainRewritableDiskTest, MoveFile)
     EXPECT_NE(a_file_path, b_file_path);
 }
 
+TEST_F(MetadataPlainRewritableDiskTest, RewriteFileUpdatesSize)
+{
+    auto metadata = getMetadataStorage("RewriteFileUpdatesSize");
+    auto object_storage = getObjectStorage("RewriteFileUpdatesSize");
+
+    {
+        auto tx = metadata->createTransaction();
+        tx->createDirectory("A");
+        size_t file_size = writeObject(object_storage, tx->generateObjectKeyForPath("A/file").serialize(), "test");
+        tx->createMetadataFile("A/file", {StoredObject("A/file", "file", file_size)});
+        size_t root_file_size = writeObject(object_storage, tx->generateObjectKeyForPath("root_file").serialize(), "test");
+        tx->createMetadataFile("root_file", {StoredObject("root_file", "root_file", root_file_size)});
+        tx->commit(DB::NoCommitOptions{});
+    }
+
+    EXPECT_EQ(metadata->getFileSize("A/file"), 4u);
+    EXPECT_EQ(metadata->getFileSize("root_file"), 4u);
+
+    {
+        auto tx = metadata->createTransaction();
+        size_t file_size = writeObject(object_storage, tx->generateObjectKeyForPath("A/file").serialize(), "Hello world!");
+        tx->createMetadataFile("A/file", {StoredObject("A/file", "file", file_size)});
+        size_t root_file_size = writeObject(object_storage, tx->generateObjectKeyForPath("root_file").serialize(), "Hello world!");
+        tx->createMetadataFile("root_file", {StoredObject("root_file", "root_file", root_file_size)});
+        tx->commit(DB::NoCommitOptions{});
+    }
+
+    EXPECT_EQ(metadata->getFileSize("A/file"), 12u);
+    EXPECT_EQ(metadata->getFileSize("root_file"), 12u);
+
+    EXPECT_EQ(readObject(object_storage, metadata->getStorageObjects("A/file").front().remote_path), "Hello world!");
+    EXPECT_EQ(readObject(object_storage, metadata->getStorageObjects("root_file").front().remote_path), "Hello world!");
+}
+
 TEST_F(MetadataPlainRewritableDiskTest, MoveFileUndo)
 {
     auto metadata = getMetadataStorage("MoveFileUndo");
@@ -691,8 +724,7 @@ TEST_F(MetadataPlainRewritableDiskTest, DirectoryFileNameCollision)
 
     {
         auto tx = metadata->createTransaction();
-        tx->createDirectory("A/B");
-        EXPECT_ANY_THROW(tx->commit(DB::NoCommitOptions{}));
+        EXPECT_ANY_THROW(tx->createDirectory("A/B"));
     }
 
     EXPECT_FALSE(metadata->existsDirectory("A/B"));
@@ -1264,14 +1296,10 @@ TEST_F(MetadataPlainRewritableDiskTest, CreateHardLink)
     EXPECT_TRUE(metadata->existsDirectory("/A"));
     EXPECT_TRUE(metadata->existsFile("/A/f1"));
     EXPECT_TRUE(metadata->existsFile("/A/f2"));
-    EXPECT_EQ(metadata->getHardlinkCount("/A/f1"), 2);
-    EXPECT_EQ(metadata->getHardlinkCount("/A/f2"), 2);
-    EXPECT_EQ(
-        metadata->getStorageObjects("/A/f1").front().remote_path,
-        metadata->getStorageObjects("/A/f2").front().remote_path);
     EXPECT_EQ(listAllBlobs("CreateHardLink"), std::vector<std::string>({
-        "./CreateHardLink/__meta/faefxnlkbtfqgxcbfqfjtztsocaqrnqn/prefix.path",  /// /A (explicit)
-        "./CreateHardLink/faefxnlkbtfqgxcbfqfjtztsocaqrnqn/f1",                  /// shared blob
+        "./CreateHardLink/__meta/faefxnlkbtfqgxcbfqfjtztsocaqrnqn/prefix.path",  /// /A
+        "./CreateHardLink/faefxnlkbtfqgxcbfqfjtztsocaqrnqn/f1",                  /// /A/f1
+        "./CreateHardLink/faefxnlkbtfqgxcbfqfjtztsocaqrnqn/f2"                   /// /A/f2
     }));
 }
 
@@ -1376,13 +1404,9 @@ TEST_F(MetadataPlainRewritableDiskTest, CreateHardLinkRootFiles)
     EXPECT_TRUE(metadata->existsFile("/f1"));
     EXPECT_TRUE(metadata->existsFile("/f2"));
     EXPECT_FALSE(metadata->existsFile("/f3"));
-    EXPECT_EQ(metadata->getHardlinkCount("/f1"), 2);
-    EXPECT_EQ(
-        metadata->getStorageObjects("/f1").front().remote_path,
-        metadata->getStorageObjects("/f2").front().remote_path);
     EXPECT_EQ(listAllBlobs("CreateHardLinkRootFiles"), std::vector<std::string>({
-        "./CreateHardLinkRootFiles/__meta/__root/prefix.path",
         "./CreateHardLinkRootFiles/__root/f1",
+        "./CreateHardLinkRootFiles/__root/f2",
     }));
 }
 
@@ -1759,15 +1783,12 @@ TEST_F(MetadataPlainRewritableDiskTest, UncommittedHardlink)
     EXPECT_TRUE(metadata->existsFile("/X/Y/Z/file"));
     EXPECT_EQ(readObject(object_storage, metadata->getStorageObjects("/A/B/C/file").front().remote_path), "finally!");
     EXPECT_EQ(readObject(object_storage, metadata->getStorageObjects("/X/Y/Z/file").front().remote_path), "finally!");
-    EXPECT_EQ(
-        metadata->getStorageObjects("/A/B/C/file").front().remote_path,
-        metadata->getStorageObjects("/X/Y/Z/file").front().remote_path);
-    EXPECT_EQ(metadata->getHardlinkCount("/A/B/C/file"), 2);
 
     EXPECT_EQ(listAllBlobs("UncommittedHardlink"), std::vector<std::string>({
         "./UncommittedHardlink/__meta/faefxnlkbtfqgxcbfqfjtztsocaqrnqn/prefix.path",
         "./UncommittedHardlink/__meta/ykwvvchguqasvfnkikaqtiebknfzafwv/prefix.path",
         "./UncommittedHardlink/faefxnlkbtfqgxcbfqfjtztsocaqrnqn/file",
+        "./UncommittedHardlink/ykwvvchguqasvfnkikaqtiebknfzafwv/file"
     }));
 
     metadata = restartMetadataStorage("UncommittedHardlink");
@@ -1777,7 +1798,6 @@ TEST_F(MetadataPlainRewritableDiskTest, UncommittedHardlink)
     EXPECT_TRUE(metadata->existsFile("/X/Y/Z/file"));
     EXPECT_EQ(readObject(object_storage, metadata->getStorageObjects("/A/B/C/file").front().remote_path), "finally!");
     EXPECT_EQ(readObject(object_storage, metadata->getStorageObjects("/X/Y/Z/file").front().remote_path), "finally!");
-    EXPECT_EQ(metadata->getHardlinkCount("/X/Y/Z/file"), 2);
 }
 
 TEST_F(MetadataPlainRewritableDiskTest, UncommittedHardlinkUndo)
@@ -1956,69 +1976,63 @@ TEST_F(MetadataPlainRewritableDiskTest, TestComplexUnlink)
     EXPECT_TRUE(metadata->existsFile("file"));
 }
 
-TEST_F(MetadataPlainRewritableDiskTest, LoadExplicitPrefixPathSharedBlob)
+TEST_F(MetadataPlainRewritableDiskTest, CreateExistingDirectory)
 {
-    thread_local_rng.seed(42);
-
-    auto metadata = getMetadataStorage("LoadExplicitPrefixPathSharedBlob");
-    auto object_storage = getObjectStorage("LoadExplicitPrefixPathSharedBlob");
+    auto metadata = getMetadataStorage("CreateExistingDirectory");
+    auto object_storage = getObjectStorage("CreateExistingDirectory");
 
     {
         auto tx = metadata->createTransaction();
-        tx->createDirectory("A");
-        tx->createDirectory("B");
+        tx->createDirectoryRecursive("A/B/C");
         tx->commit(DB::NoCommitOptions{});
     }
 
-    const std::string a_remote = generateObjectKeyPrefixForDirectoryPath(metadata, "A/");
-    const std::string b_remote = generateObjectKeyPrefixForDirectoryPath(metadata, "B/");
-    const std::string shared_relative = fmt::format("{}/shared.bin", a_remote);
+    {
+        auto tx = metadata->createTransaction();
+        tx->createDirectory("A/B/C");
+        size_t file_size = writeObject(object_storage, tx->generateObjectKeyForPath("A/B/C/file").serialize(), "1");
+        tx->createMetadataFile("A/B/C/file", {StoredObject("A/B/C/file", "file", file_size)});
+        tx->commit(DB::NoCommitOptions{});
+    }
 
-    writeObject(object_storage, fmt::format("./LoadExplicitPrefixPathSharedBlob/{}", shared_relative), "shared-data");
+    EXPECT_TRUE(metadata->existsFile("A/B/C/file"));
+    EXPECT_EQ(readObject(object_storage, metadata->getStorageObjects("A/B/C/file").front().remote_path), "1");
 
-    const auto a_prefix = createMetadataObjectPath(metadata, "A");
-    const auto b_prefix = createMetadataObjectPath(metadata, "B");
-    writeObject(
-        object_storage,
-        a_prefix,
-        serializePlainRewritablePrefixPath(PlainRewritablePrefixPath{
-            .logical_path = "A/",
-            .explicit_files = true,
-            .files = {{"shared.bin", shared_relative}},
-        }));
-    writeObject(
-        object_storage,
-        b_prefix,
-        serializePlainRewritablePrefixPath(PlainRewritablePrefixPath{
-            .logical_path = "B/",
-            .explicit_files = true,
-            .files = {{"link.bin", shared_relative}},
-        }));
-
-    metadata = restartMetadataStorage("LoadExplicitPrefixPathSharedBlob");
-
-    EXPECT_TRUE(metadata->existsFile("A/shared.bin"));
-    EXPECT_TRUE(metadata->existsFile("B/link.bin"));
-    EXPECT_EQ(sorted(metadata->listDirectory("A")), std::vector<std::string>({"shared.bin"}));
-    EXPECT_EQ(sorted(metadata->listDirectory("B")), std::vector<std::string>({"link.bin"}));
-
-    const auto a_objects = metadata->getStorageObjects("A/shared.bin");
-    const auto b_objects = metadata->getStorageObjects("B/link.bin");
-    ASSERT_EQ(a_objects.size(), 1);
-    ASSERT_EQ(b_objects.size(), 1);
-    EXPECT_EQ(a_objects.front().remote_path, b_objects.front().remote_path);
-    EXPECT_EQ(readObject(object_storage, a_objects.front().remote_path), "shared-data");
-
-    EXPECT_EQ(metadata->getHardlinkCount("A/shared.bin"), 2);
-    EXPECT_EQ(metadata->getHardlinkCount("B/link.bin"), 2);
+    metadata = restartMetadataStorage("CreateExistingDirectory");
+    EXPECT_TRUE(metadata->existsFile("A/B/C/file"));
+    EXPECT_EQ(readObject(object_storage, metadata->getStorageObjects("A/B/C/file").front().remote_path), "1");
 }
 
-TEST_F(MetadataPlainRewritableDiskTest, MoveDirectoryPreservesExplicitPrefixPath)
+TEST_F(MetadataPlainRewritableDiskTest, RecreateDirectoryInSameTransaction)
 {
-    thread_local_rng.seed(42);
+    auto metadata = getMetadataStorage("RecreateDirectoryInSameTransaction");
+    auto object_storage = getObjectStorage("RecreateDirectoryInSameTransaction");
 
-    auto metadata = getMetadataStorage("MoveDirectoryPreservesExplicitPrefixPath");
-    auto object_storage = getObjectStorage("MoveDirectoryPreservesExplicitPrefixPath");
+    {
+        auto tx = metadata->createTransaction();
+        tx->createDirectoryRecursive("A/B/C");
+        tx->commit(DB::NoCommitOptions{});
+    }
+
+    auto old_prefix = generateObjectKeyPrefixForDirectoryPath(metadata, "A/B/C/");
+
+    {
+        auto tx = metadata->createTransaction();
+        tx->moveDirectory("A/B/C", "A/B/D");
+        tx->createDirectory("A/B/C");
+        tx->commit(DB::NoCommitOptions{});
+    }
+
+    EXPECT_TRUE(metadata->existsDirectory("A/B/C"));
+    EXPECT_TRUE(metadata->existsDirectory("A/B/D"));
+    EXPECT_EQ(generateObjectKeyPrefixForDirectoryPath(metadata, "A/B/D/"), old_prefix);
+    EXPECT_NE(generateObjectKeyPrefixForDirectoryPath(metadata, "A/B/C/"), old_prefix);
+}
+
+TEST_F(MetadataPlainRewritableDiskTest, TransactionViewAfterMove)
+{
+    auto metadata = getMetadataStorage("TransactionViewAfterMove");
+    auto object_storage = getObjectStorage("TransactionViewAfterMove");
 
     {
         auto tx = metadata->createTransaction();
@@ -2026,152 +2040,197 @@ TEST_F(MetadataPlainRewritableDiskTest, MoveDirectoryPreservesExplicitPrefixPath
         tx->commit(DB::NoCommitOptions{});
     }
 
-    const std::string a_remote = generateObjectKeyPrefixForDirectoryPath(metadata, "A/");
-    const std::string relative = fmt::format("{}/f1", a_remote);
-    writeObject(object_storage, fmt::format("./MoveDirectoryPreservesExplicitPrefixPath/{}", relative), "payload");
-    writeObject(
-        object_storage,
-        createMetadataObjectPath(metadata, "A"),
-        serializePlainRewritablePrefixPath(PlainRewritablePrefixPath{
-            .logical_path = "A/",
-            .explicit_files = true,
-            .files = {{"f1", relative}},
-        }));
+    auto a_prefix = generateObjectKeyPrefixForDirectoryPath(metadata, "A/");
 
-    metadata = restartMetadataStorage("MoveDirectoryPreservesExplicitPrefixPath");
-    ASSERT_TRUE(metadata->existsFile("A/f1"));
-
+    /// Creating the destination of an earlier move must be an idempotent no-op.
     {
         auto tx = metadata->createTransaction();
-        tx->moveDirectory("A", "MOVED");
+        tx->moveDirectory("A", "B");
+        tx->createDirectory("B");
         tx->commit(DB::NoCommitOptions{});
     }
 
     EXPECT_FALSE(metadata->existsDirectory("A"));
-    EXPECT_TRUE(metadata->existsDirectory("MOVED"));
-    EXPECT_TRUE(metadata->existsFile("MOVED/f1"));
+    EXPECT_TRUE(metadata->existsDirectory("B"));
+    EXPECT_EQ(generateObjectKeyPrefixForDirectoryPath(metadata, "B/"), a_prefix);
 
-    const auto parsed = parsePlainRewritablePrefixPath(readObject(object_storage, createMetadataObjectPath(metadata, "MOVED")));
-    EXPECT_TRUE(parsed.explicit_files);
-    EXPECT_EQ(parsed.logical_path, "MOVED/");
-    ASSERT_EQ(parsed.files.size(), 1);
-    EXPECT_EQ(parsed.files[0].first, "f1");
-    EXPECT_EQ(parsed.files[0].second, relative);
-    EXPECT_EQ(metadata->getStorageObjects("MOVED/f1").front().remote_path, fmt::format("./MoveDirectoryPreservesExplicitPrefixPath/{}", relative));
+    /// A path restored within the same transaction must be usable again.
+    {
+        auto tx = metadata->createTransaction();
+        tx->moveDirectory("B", "A");
+        tx->moveDirectory("A", "B");
+        tx->createDirectory("B");
+        tx->commit(DB::NoCommitOptions{});
+    }
+
+    EXPECT_FALSE(metadata->existsDirectory("A"));
+    EXPECT_TRUE(metadata->existsDirectory("B"));
+    EXPECT_EQ(generateObjectKeyPrefixForDirectoryPath(metadata, "B/"), a_prefix);
+
+    metadata = restartMetadataStorage("TransactionViewAfterMove");
+    EXPECT_FALSE(metadata->existsDirectory("A"));
+    EXPECT_TRUE(metadata->existsDirectory("B"));
+    EXPECT_EQ(generateObjectKeyPrefixForDirectoryPath(metadata, "B/"), a_prefix);
 }
 
-TEST_F(MetadataPlainRewritableDiskTest, ImplicitLoadStillPopulatesObjectKeyAndHardlinkCount)
+TEST_F(MetadataPlainRewritableDiskTest, ConcurrentCreateUnderMovedDirectory)
 {
-    thread_local_rng.seed(42);
-
-    auto metadata = getMetadataStorage("ImplicitLoadStillPopulatesObjectKeyAndHardlinkCount");
-    auto object_storage = getObjectStorage("ImplicitLoadStillPopulatesObjectKeyAndHardlinkCount");
+    auto metadata = getMetadataStorage("ConcurrentCreateUnderMovedDirectory");
 
     {
         auto tx = metadata->createTransaction();
         tx->createDirectory("A");
-        size_t size = writeObject(object_storage, tx->generateObjectKeyForPath("A/f1").serialize(), "data");
-        tx->createMetadataFile("A/f1", {StoredObject("f1", "f1", size)});
         tx->commit(DB::NoCommitOptions{});
     }
 
-    metadata = restartMetadataStorage("ImplicitLoadStillPopulatesObjectKeyAndHardlinkCount");
-    EXPECT_TRUE(metadata->existsFile("A/f1"));
-    EXPECT_EQ(metadata->getHardlinkCount("A/f1"), 1);
-    EXPECT_EQ(readObject(object_storage, metadata->getStorageObjects("A/f1").front().remote_path), "data");
+    /// The move relocates the subtree as of the commit time: a directory committed
+    /// concurrently under the source serializes before the move and travels with it.
+    auto tx1 = metadata->createTransaction();
+    tx1->moveDirectory("A", "B");
+
+    {
+        auto tx2 = metadata->createTransaction();
+        tx2->createDirectory("A/C");
+        tx2->commit(DB::NoCommitOptions{});
+    }
+
+    tx1->commit(DB::NoCommitOptions{});
+
+    EXPECT_FALSE(metadata->existsDirectory("A"));
+    EXPECT_TRUE(metadata->existsDirectory("B"));
+    EXPECT_TRUE(metadata->existsDirectory("B/C"));
+
+    metadata = restartMetadataStorage("ConcurrentCreateUnderMovedDirectory");
+    EXPECT_FALSE(metadata->existsDirectory("A"));
+    EXPECT_TRUE(metadata->existsDirectory("B/C"));
 }
 
-TEST_F(MetadataPlainRewritableDiskTest, HardLinkUnlinkKeepsSharedBlobUntilLastLink)
+TEST_F(MetadataPlainRewritableDiskTest, ConcurrentRecreateUnderUnlinkFile)
 {
-    thread_local_rng.seed(42);
+    auto metadata = getMetadataStorage("ConcurrentRecreateUnderUnlinkFile");
+    auto object_storage = getObjectStorage("ConcurrentRecreateUnderUnlinkFile");
 
-    auto metadata = getMetadataStorage("HardLinkUnlinkKeepsSharedBlobUntilLastLink");
-    auto object_storage = getObjectStorage("HardLinkUnlinkKeepsSharedBlobUntilLastLink");
+    {
+        auto tx = metadata->createTransaction();
+        tx->createDirectory("A");
+        size_t size = writeObject(object_storage, tx->generateObjectKeyForPath("A/file").serialize(), "Old content");
+        tx->createMetadataFile("A/file", {StoredObject("A/file", "file", size)});
+        tx->commit(DB::NoCommitOptions{});
+    }
+
+    /// The unlink must not remove a file this transaction never observed.
+    auto tx1 = metadata->createTransaction();
+    tx1->unlinkFile("A/file", /*if_exists=*/true, /*should_remove_objects=*/true);
+
+    {
+        auto tx2 = metadata->createTransaction();
+        tx2->removeRecursive("A", /*should_remove_blob=*/nullptr);
+        tx2->createDirectory("A");
+        size_t size = writeObject(object_storage, tx2->generateObjectKeyForPath("A/file").serialize(), "New content");
+        tx2->createMetadataFile("A/file", {StoredObject("A/file", "file", size)});
+        tx2->commit(DB::NoCommitOptions{});
+    }
+
+    EXPECT_ANY_THROW(tx1->commit(DB::NoCommitOptions{}));
+
+    EXPECT_TRUE(metadata->existsFile("A/file"));
+    EXPECT_EQ(readObject(object_storage, metadata->getStorageObjects("A/file").front().remote_path), "New content");
+}
+
+TEST_F(MetadataPlainRewritableDiskTest, SnapshotDecisionPreservedOnConcurrentChange)
+{
+    auto metadata = getMetadataStorage("SnapshotDecisionPreservedOnConcurrentChange");
+
+    auto tx1 = metadata->createTransaction();
+    tx1->removeRecursive("X", /*should_remove_blob=*/nullptr);
+
+    {
+        auto tx2 = metadata->createTransaction();
+        tx2->createDirectory("X");
+        tx2->commit(DB::NoCommitOptions{});
+    }
+
+    tx1->commit(DB::NoCommitOptions{});
+    EXPECT_FALSE(metadata->existsDirectory("X"));
+}
+
+TEST_F(MetadataPlainRewritableDiskTest, ConcurrentCreateUnderUnlinkFile)
+{
+    auto metadata = getMetadataStorage("ConcurrentCreateUnderUnlinkFile");
+    auto object_storage = getObjectStorage("ConcurrentCreateUnderUnlinkFile");
+
+    {
+        auto tx = metadata->createTransaction();
+        tx->createDirectory("A");
+        tx->commit(DB::NoCommitOptions{});
+    }
+
+    /// The unlink removes the file as of the commit time: a file committed
+    /// concurrently serializes before the unlink and gets removed by it.
+    auto tx1 = metadata->createTransaction();
+    tx1->unlinkFile("A/file", /*if_exists=*/false, /*should_remove_objects=*/true);
+
+    {
+        auto tx2 = metadata->createTransaction();
+        size_t size = writeObject(object_storage, tx2->generateObjectKeyForPath("A/file").serialize(), "New content");
+        tx2->createMetadataFile("A/file", {StoredObject("A/file", "file", size)});
+        tx2->commit(DB::NoCommitOptions{});
+    }
+
+    tx1->commit(DB::NoCommitOptions{});
+
+    EXPECT_FALSE(metadata->existsFile("A/file"));
+    EXPECT_TRUE(metadata->existsDirectory("A"));
+}
+
+TEST_F(MetadataPlainRewritableDiskTest, ConcurrentRemoveOfMoveTarget)
+{
+    auto metadata = getMetadataStorage("ConcurrentRemoveOfMoveTarget");
 
     {
         auto tx = metadata->createTransaction();
         tx->createDirectory("A");
         tx->createDirectory("B");
-        size_t size = writeObject(object_storage, tx->generateObjectKeyForPath("A/f1").serialize(), "shared");
-        tx->createMetadataFile("A/f1", {StoredObject("f1", "f1", size)});
         tx->commit(DB::NoCommitOptions{});
     }
+
+    auto tx1 = metadata->createTransaction();
+    tx1->moveDirectory("A", "B");
 
     {
-        auto tx = metadata->createTransaction();
-        tx->createHardLink("A/f1", "B/f1");
-        tx->commit(DB::NoCommitOptions{});
+        auto tx2 = metadata->createTransaction();
+        tx2->removeDirectory("B");
+        tx2->commit(DB::NoCommitOptions{});
     }
 
-    const auto shared_remote = metadata->getStorageObjects("A/f1").front().remote_path;
-    EXPECT_EQ(shared_remote, metadata->getStorageObjects("B/f1").front().remote_path);
-    EXPECT_EQ(metadata->getHardlinkCount("A/f1"), 2);
+    tx1->commit(DB::NoCommitOptions{});
 
-    {
-        auto tx = metadata->createTransaction();
-        tx->unlinkFile("A/f1", /*if_exists=*/false, /*should_remove_objects=*/true);
-        tx->commit(DB::NoCommitOptions{});
-    }
-
-    EXPECT_FALSE(metadata->existsFile("A/f1"));
-    EXPECT_TRUE(metadata->existsFile("B/f1"));
-    EXPECT_EQ(metadata->getHardlinkCount("B/f1"), 1);
-    EXPECT_EQ(readObject(object_storage, shared_remote), "shared");
-
-    {
-        auto tx = metadata->createTransaction();
-        tx->unlinkFile("B/f1", /*if_exists=*/false, /*should_remove_objects=*/true);
-        tx->commit(DB::NoCommitOptions{});
-        for (const auto & object : tx->getSubmittedForRemovalBlobs())
-            object_storage->removeObjectIfExists(object);
-    }
-
-    EXPECT_FALSE(metadata->existsFile("B/f1"));
-    EXPECT_FALSE(object_storage->exists(StoredObject(shared_remote)));
+    EXPECT_FALSE(metadata->existsDirectory("A"));
+    EXPECT_TRUE(metadata->existsDirectory("B"));
 }
 
-TEST_F(MetadataPlainRewritableDiskTest, ExplicitDirectoryUsesRandomBlobNames)
+TEST_F(MetadataPlainRewritableDiskTest, ConcurrentCreateDirectory)
 {
-    thread_local_rng.seed(42);
+    auto metadata = getMetadataStorage("ConcurrentCreateDirectory");
 
-    auto metadata = getMetadataStorage("ExplicitDirectoryUsesRandomBlobNames");
-    auto object_storage = getObjectStorage("ExplicitDirectoryUsesRandomBlobNames");
-
-    {
-        auto tx = metadata->createTransaction();
-        tx->createDirectory("A");
-        size_t size = writeObject(object_storage, tx->generateObjectKeyForPath("A/f1").serialize(), "v1");
-        tx->createMetadataFile("A/f1", {StoredObject("f1", "f1", size)});
-        tx->commit(DB::NoCommitOptions{});
-    }
+    /// Regression test for https://github.com/ClickHouse/ClickHouse/issues/111289
+    auto tx1 = metadata->createTransaction();
+    tx1->createDirectoryRecursive("A");
 
     {
-        auto tx = metadata->createTransaction();
-        tx->createHardLink("A/f1", "A/f1_link");
-        tx->commit(DB::NoCommitOptions{});
+        auto tx2 = metadata->createTransaction();
+        tx2->createDirectoryRecursive("A");
+        tx2->commit(DB::NoCommitOptions{});
     }
 
-    const auto old_remote = metadata->getStorageObjects("A/f1").front().remote_path;
+    auto remote_prefix = generateObjectKeyPrefixForDirectoryPath(metadata, "A/");
+    tx1->commit(DB::NoCommitOptions{});
 
-    {
-        auto tx = metadata->createTransaction();
-        tx->unlinkFile("A/f1", /*if_exists=*/false, /*should_remove_objects=*/true);
-        tx->commit(DB::NoCommitOptions{});
-    }
+    EXPECT_TRUE(metadata->existsDirectory("A"));
+    EXPECT_EQ(generateObjectKeyPrefixForDirectoryPath(metadata, "A/"), remote_prefix);
+    EXPECT_EQ(listAllBlobs("ConcurrentCreateDirectory").size(), 1);
 
-    {
-        auto tx = metadata->createTransaction();
-        const auto new_key = tx->generateObjectKeyForPath("A/f1").serialize();
-        EXPECT_NE(new_key, old_remote);
-        EXPECT_FALSE(new_key.ends_with("/f1"));
-        size_t size = writeObject(object_storage, new_key, "v2");
-        tx->createMetadataFile("A/f1", {StoredObject(new_key, "A/f1", size)});
-        tx->commit(DB::NoCommitOptions{});
-    }
-
-    EXPECT_EQ(readObject(object_storage, metadata->getStorageObjects("A/f1").front().remote_path), "v2");
-    EXPECT_EQ(readObject(object_storage, metadata->getStorageObjects("A/f1_link").front().remote_path), "v1");
-    EXPECT_NE(
-        metadata->getStorageObjects("A/f1").front().remote_path,
-        metadata->getStorageObjects("A/f1_link").front().remote_path);
+    metadata = restartMetadataStorage("ConcurrentCreateDirectory");
+    EXPECT_TRUE(metadata->existsDirectory("A"));
+    EXPECT_EQ(generateObjectKeyPrefixForDirectoryPath(metadata, "A/"), remote_prefix);
 }
