@@ -22,6 +22,8 @@ void FsMetadata::applySnapshot(std::shared_ptr<FsSnapshot> snapshot)
 
     UniqueLock lock(mutex);
     blob_link_counts->apply(blob_link_deltas);
+    /// The deltas are now part of the committed counts; drop them so reads through the committed snapshot do not re-apply them.
+    snapshot->resetDeltas();
     latest_snapshot = std::move(snapshot);
     remote_layout_directories_count.add(directories_delta);
     remote_layout_files_count.add(files_delta);

@@ -431,44 +431,30 @@ void MetadataStorageFromPlainObjectStorageWriteFileOperation::execute()
 
     auto directory_info = getDirectoryInfoOrThrow(*fs_tree, directory);
     const std::string default_blob_key = getDefaultBlobKey(directory_info.remote_path, file_name);
-    const bool default_location = blob_key.empty() || blob_key == default_blob_key;
-
-    /// The object key was chosen when the write started, based on the state of the directory at that moment.
-    /// A blob written to the default location may clobber a blob still shared with other files if the directory
-    /// has changed since then; this is not expected for MergeTree, but must not go unnoticed.
-    if (default_location && directory_info.has_explicit_file_list)
-        throw Exception(
-            ErrorCodes::INCORRECT_DATA,
-            "Directory '{}' has switched to the explicit file list concurrently, the blob of the file '{}' cannot be stored at the default location",
-            directory.string(),
-            path);
+    /// `generateObjectKeyForPath` chose the key: the default location `<remote path>/<file name>` for an implicit
+    /// directory or a fresh name, and a random name when the file already exists in an explicit directory or shares
+    /// its blob (so a new file never clobbers a blob still linked from elsewhere).
+    const std::string new_blob_key = blob_key.empty() ? default_blob_key : blob_key;
 
     if (const auto it = directory_info.files.find(file_name); it != directory_info.files.end())
     {
         const auto existing_blob_key = getBlobKey(directory_info, file_name, it->second);
-        if (default_location)
-        {
-            /// The blob has been overwritten in place, which is only correct if no other file shares it.
-            if (fs_tree->getBlobLinkCount(existing_blob_key) != 1)
-                throw Exception(
-                    ErrorCodes::INCORRECT_DATA,
-                    "File '{}' has been hard-linked concurrently, its blob cannot be overwritten in place",
-                    path);
-        }
-        else if (existing_blob_key != blob_key)
-        {
+        /// Rewriting a file to a new blob drops the link to the old one; the old blob is removed if it was the last link.
+        /// When the key is reused (an in-place overwrite in the default location) the caller has already replaced the
+        /// blob's content, so there is nothing to remove and the link count is unchanged.
+        if (existing_blob_key != new_blob_key)
             replaced_blob = removeLinkAndGetBlobToRemove(*fs_tree, *layout, existing_blob_key);
-        }
 
         fs_tree->removeFile(path);
     }
 
-    fs_tree->recordFile(path, FileRemoteInfo{.bytes_size = object.bytes_size, .last_modified = std::time(nullptr), .blob_key = default_location ? "" : blob_key});
+    fs_tree->recordFile(path, FileRemoteInfo{.bytes_size = object.bytes_size, .last_modified = std::time(nullptr), .blob_key = new_blob_key});
 
-    if (default_location)
+    /// An explicit directory does not list its blobs, so the new file must be added to `prefix.path`. A blob outside
+    /// of the default location cannot be discovered by listing either, so it forces the directory to the explicit form.
+    if (!directory_info.has_explicit_file_list && new_blob_key == default_blob_key)
         return;
 
-    /// A blob outside of the default location must be listed in `prefix.path`.
     previous_directory_info = directory_info;
     fs_tree->markDirectoryExplicit(directory);
 

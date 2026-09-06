@@ -462,4 +462,12 @@ std::unordered_map<std::string, int64_t> FsSnapshot::getBlobLinkDeltas() const
     return blob_link_deltas;
 }
 
+void FsSnapshot::resetDeltas()
+{
+    UniqueLock lock(mutex);
+    blob_link_deltas.clear();
+    remote_layout_directories_delta = 0;
+    remote_layout_files_delta = 0;
+}
+
 }

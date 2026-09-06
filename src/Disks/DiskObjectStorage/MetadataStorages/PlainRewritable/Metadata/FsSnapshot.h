@@ -101,6 +101,9 @@ public:
     void setRoot(std::shared_ptr<FsNode> new_root);
     std::pair<int64_t, int64_t> getRemoteLayoutDeltas() const;
     std::unordered_map<std::string, int64_t> getBlobLinkDeltas() const;
+    /// Forgets the accumulated deltas without changing the tree. Called after the deltas have been folded
+    /// into the committed state, so a snapshot promoted to the committed one does not double-count them.
+    void resetDeltas();
 
 private:
     mutable std::mutex mutex;
