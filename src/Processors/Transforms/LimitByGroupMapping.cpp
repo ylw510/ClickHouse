@@ -1,11 +1,17 @@
 #include <Processors/Transforms/LimitByGroupMapping.h>
 
 #include <Columns/ColumnConst.h>
+#include <Common/Exception.h>
 
 #include <limits>
 
 namespace DB
 {
+
+namespace ErrorCodes
+{
+extern const int LOGICAL_ERROR;
+}
 
 UInt64 computeGroupLimitEnd(UInt64 length, UInt64 offset)
 {

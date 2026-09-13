@@ -36,7 +36,7 @@ namespace DB
 
 namespace Setting
 {
-    extern const SettingsUInt64 max_block_size;
+    extern const SettingsNonZeroUInt64 max_block_size;
     extern const SettingsUInt64 max_bytes_before_external_limit_by;
     extern const SettingsDouble max_bytes_ratio_before_external_limit_by;
     extern const SettingsUInt64 min_free_disk_space_for_temporary_data;

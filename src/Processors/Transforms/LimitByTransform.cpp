@@ -6,7 +6,6 @@
 #include <Core/SortCursor.h>
 #include <DataTypes/IDataType.h>
 #include <base/defines.h>
-#include <Common/Exception.h>
 #include <Common/FailPoint.h>
 #include <Common/logger_useful.h>
 
@@ -18,11 +17,6 @@
 namespace DB
 {
 
-namespace ErrorCodes
-{
-extern const int LOGICAL_ERROR;
-}
-
 namespace FailPoints
 {
 extern const char limit_by_sorted_stream_transform_pause[];
@@ -32,8 +26,6 @@ extern const char limit_by_transform_after_loop_pause[];
 extern const char limit_by_sorted_stream_transform_mid_loop_pause[];
 extern const char limit_by_transform_mid_loop_pause[];
 }
-
-
 
 LimitByTransform::LimitByTransform(
     SharedHeader header,
