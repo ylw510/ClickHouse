@@ -31,7 +31,12 @@ namespace DB
 class LimitByTransform final : public ISimpleTransform
 {
 public:
-    LimitByTransform(SharedHeader header, UInt64 group_length_, UInt64 group_offset_, const Names & column_names);
+    LimitByTransform(
+        SharedHeader header,
+        UInt64 group_length_,
+        UInt64 group_offset_,
+        const Names & column_names,
+        bool always_read_till_end_ = false);
 
     String getName() const override { return "LimitByTransform"; }
 
@@ -47,6 +52,7 @@ private:
     /// Kept per-group interval is `[group_offset, group_limit_end)`.
     const UInt64 group_offset;
     const UInt64 group_limit_end;
+    const bool always_read_till_end;
 
     /// The grouping hash table and the per-group counter of input rows seen so far.
     LimitByGroupMapping mapping;
@@ -82,7 +88,12 @@ private:
 class LimitBySortedStreamTransform final : public ISimpleTransform
 {
 public:
-    LimitBySortedStreamTransform(SharedHeader header, UInt64 group_length_, UInt64 group_offset_, const SortDescription & sorted_columns_descr);
+    LimitBySortedStreamTransform(
+        SharedHeader header,
+        UInt64 group_length_,
+        UInt64 group_offset_,
+        const SortDescription & sorted_columns_descr,
+        bool always_read_till_end_ = false);
 
     String getName() const override { return "LimitBySortedStreamTransform"; }
 
@@ -107,6 +118,7 @@ private:
     /// Kept per-group interval is `[group_offset, group_limit_end)`.
     const UInt64 group_offset;
     const UInt64 group_limit_end;
+    const bool always_read_till_end;
 
     MutableColumns previous_chunk_last_grouping_key_columns;
 
