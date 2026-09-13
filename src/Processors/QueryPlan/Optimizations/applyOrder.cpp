@@ -7,6 +7,7 @@
 #include <Processors/QueryPlan/ExpressionStep.h>
 #include <Processors/QueryPlan/FilterStep.h>
 #include <Processors/QueryPlan/LimitByStep.h>
+#include <Processors/QueryPlan/LimitRangeStep.h>
 #include <Processors/QueryPlan/NegativeLimitByStep.h>
 #include <Processors/QueryPlan/MergingAggregatedStep.h>
 #include <Processors/QueryPlan/UnionStep.h>
@@ -171,6 +172,16 @@ static SortingProperty applyOrder(QueryPlan::Node * parent, SortingProperty * pr
                 return std::move(*properties);
             return {};
         }
+    }
+
+    if (typeid_cast<LimitRangeStep *>(parent->step.get()))
+    {
+        /// The range is evaluated over a single stream, so several per-stream-sorted inputs are
+        /// concatenated without a merge and only a global order survives the step.
+        if (properties->sort_scope != SortingProperty::SortScope::Global)
+            return {};
+
+        return std::move(*properties);
     }
 
     if (auto * transforming = dynamic_cast<ITransformingStep *>(parent->step.get()))

@@ -166,18 +166,26 @@ size_t tryTopKThroughArrayJoin(QueryPlan::Node * parent_node, QueryPlan::Nodes &
     /// already reads `InOrder` today.
     if (settings.read_in_order)
     {
-        SortingStep probe_sort_step(
-            array_join_input_node->step->getOutputHeader(),
-            description,
-            n,
-            sort_step->getSettings());
+        if (const auto * reading = findMergeTreeRead(array_join_input_node))
+        {
+            SortingStep probe_sort_step(
+                array_join_input_node->step->getOutputHeader(),
+                description,
+                n,
+                sort_step->getSettings());
 
-        if (wouldReadInOrderBeUseful(
+            const bool read_in_order_useful = wouldReadInOrderBeUseful(
                 probe_sort_step,
-                *array_join_input_node,
-                settings.read_in_order_through_join,
-                settings.read_in_order_through_spilling_join))
-            return 0;
+                reading->getStorageMetadata()->getSortingKey(),
+                *array_join_input_node);
+
+            const bool any_desc = std::ranges::any_of(
+                description, [](const SortColumnDescription & c) { return c.direction != 1; });
+            const bool final_blocks_pass2 = reading->isQueryWithFinal() && any_desc;
+
+            if (read_in_order_useful && !final_blocks_pass2)
+                return 0;
+        }
     }
 
     /// An inner ARRAY JOIN drops input rows whose arrays are all empty. Filter them out below the
