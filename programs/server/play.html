@@ -1203,6 +1203,33 @@
             left: 0;
         }
 
+        #run_div
+        {
+            margin-top: 0.25rem;
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 0.5rem 0.75rem;
+            row-gap: 0.375rem;
+            /* Stay visible while scrolling long result tables so Logs/Metrics and the progress
+               line (rows, elapsed, RAM, read stats) remain reachable without scrolling back.
+               A direct child of #main (not inside #controls): sticky is relative to #main's
+               scrollport, so the bar stays put once the query editor scrolls away. */
+            position: sticky;
+            top: 0;
+            left: 0;
+            z-index: 3;
+            background-color: var(--background-color);
+            padding-bottom: 0.25rem;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        /* Keep the action buttons and icons from shrinking away when the progress line is long. */
+        #run_div > :not(query-progress)
+        {
+            flex-shrink: 0;
+        }
+
         /* Otherwise Webkit based browsers will display ugly border on focus. */
         textarea, input, button
         {
@@ -1460,17 +1487,49 @@
             background-color: var(--element-background-color-fail);
         }
 
-        #run_div
-        {
-            margin-top: 0.25rem;
-            display: flex;
-            align-items: center;
-            gap: 1rem;
-        }
-
         query-progress
         {
-            flex: 1;
+            flex: 1 1 12rem;
+            min-width: 0;
+        }
+
+        @media (max-width: 36rem)
+        {
+            #run_div
+            {
+                display: grid;
+                grid-template-columns: auto auto 1fr auto auto auto;
+                align-items: center;
+                column-gap: 0.5rem;
+                row-gap: 0.375rem;
+            }
+
+            #run_div #hint
+            {
+                display: none;
+            }
+
+            #run_div query-progress
+            {
+                grid-column: 1 / -1;
+                width: 100%;
+                flex: none;
+            }
+
+            #run_div #copy-div
+            {
+                grid-column: 4;
+            }
+
+            #run_div #download-div
+            {
+                grid-column: 5;
+            }
+
+            #run_div #theme
+            {
+                grid-column: 6;
+            }
         }
 
         #run, #run-all
@@ -1848,27 +1907,27 @@
             </div>
             <div id="query_div"><div id="query-backdrop"></div><div id="completion-mirror"></div><textarea autofocus spellcheck="false" autocorrect="false" autocomplete="false" data-gramm="false" class="monospace shadow" id="query"></textarea><div id="completion-overlay"></div></div>
             <div id="query-params"></div>
-            <div id="run_div">
-                <button type="submit" class="shadow" id="run">Run</button>
-                <button type="button" class="shadow" id="run-all">Run all</button>
-                <div id="hint">&nbsp;(<span id="hint-modifier">Ctrl/Cmd</span>+Enter<span id="hint-run-all" style="display: none">, +Shift to run all</span>)</div>
-                <query-progress id="query-progress"></query-progress>
-                <div id="copy-div" class="shadow" title="Copy raw result to clipboard">
-                    <svg id="copy-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
-                        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
-                    </svg>
-                </div>
-                <div id="download-div" class="shadow">
-                    <svg id="download" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                        <polyline points="7 10 12 15 17 10"/>
-                        <line x1="12" y1="15" x2="12" y2="3"/>
-                    </svg>
-                </div>
-                <div id="theme"><span id="toggle-dark">🌘</span><span id="toggle-light">☀️</span></div>
-            </div>
         </form>
+        <div id="run_div">
+            <button type="submit" form="controls" class="shadow" id="run">Run</button>
+            <button type="button" class="shadow" id="run-all">Run all</button>
+            <div id="hint">&nbsp;(<span id="hint-modifier">Ctrl/Cmd</span>+Enter<span id="hint-run-all" style="display: none">, +Shift to run all</span>)</div>
+            <query-progress id="query-progress"></query-progress>
+            <div id="copy-div" class="shadow" title="Copy raw result to clipboard">
+                <svg id="copy-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                </svg>
+            </div>
+            <div id="download-div" class="shadow">
+                <svg id="download" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                    <polyline points="7 10 12 15 17 10"/>
+                    <line x1="12" y1="15" x2="12" y2="3"/>
+                </svg>
+            </div>
+            <div id="theme"><span id="toggle-dark">🌘</span><span id="toggle-light">☀️</span></div>
+        </div>
         <div id="result-panels"></div>
         <p id="logo-container">
             <a href="https://clickhouse.com/">
@@ -2103,6 +2162,51 @@ class QueryProgressElement extends HTMLElement
                 .progress-toggle, #progress-text, #stats
                 {
                     font-family: DejaVu Sans Mono, Liberation Mono, MonoLisa, Consolas, monospace;
+                }
+
+                @media (max-width: 36rem)
+                {
+                    :host
+                    {
+                        flex-direction: column;
+                        align-items: flex-start;
+                        gap: 0.25rem;
+                        width: 100%;
+                    }
+
+                    #hourglass, #check-mark, .progress-toggle
+                    {
+                        align-self: flex-start;
+                    }
+
+                    #progress
+                    {
+                        width: 100%;
+                        display: flex;
+                        flex-direction: column;
+                        align-items: flex-start;
+                        gap: 0.125rem;
+                        overflow: visible;
+                        white-space: normal;
+                        /* Plain text on narrow viewports: the gradient text mask is one line
+                           wide and makes wrapped/overlapping lines illegible. */
+                        background: none;
+                        -webkit-background-clip: unset;
+                        background-clip: unset;
+                        color: var(--misc-text-color);
+                        -webkit-text-fill-color: var(--misc-text-color);
+                    }
+
+                    #progress-text, #stats
+                    {
+                        display: block;
+                        width: 100%;
+                        text-align: left;
+                        white-space: normal;
+                        overflow-wrap: anywhere;
+                        color: var(--misc-text-color);
+                        -webkit-text-fill-color: var(--misc-text-color);
+                    }
                 }
 
                 @keyframes hourglass-animation
@@ -9919,6 +10023,10 @@ function makeEventStreamHandler(targetResultEl, options = {})
     {
         if (name === 'data' || name === 'totals' || name === 'extremes')
         {
+            /// Once the display row limit is reached, keep draining the stream for progress, logs,
+            /// and profile events, but stop rendering more rows (see `readEventStream`).
+            if (options.rowLimitReached && options.rowLimitReached())
+                return;
             /// Both verbatim modes below (the base64 bytes and the raw text) rebuild the output of
             /// the format itself by concatenating the payloads, so for a format whose plain output
             /// drops the totals and the extremes rows only the `data` packets belong to it - the
@@ -10127,7 +10235,7 @@ async function readEventStream(response, targetResultEl, abortController, tab, p
 
     let buffer = '';
     let reply = '';
-    let stop = false;
+    let row_limit_reached = false;
     let saw_exception = false;
     /// The raw `event: exception` block, kept separately from the capped `reply`: for a long
     /// stream the cap stops `reply` growing before the terminal exception arrives, and the
@@ -10158,7 +10266,8 @@ async function readEventStream(response, targetResultEl, abortController, tab, p
         progressEl.adoptResourceState(tab.resources);
 
     const handleEvent = makeEventStreamHandler(targetResultEl, {
-        onStop: () => { stop = true; },
+        onStop: () => { row_limit_reached = true; },
+        rowLimitReached: () => row_limit_reached,
         resourceMeter: (events) => {
             accumulateResourceEvents(tab.resources, events);
             if (tab.id === activeTabId) progressEl.renderResourcesFrom(tab.resources);
@@ -10196,15 +10305,25 @@ async function readEventStream(response, targetResultEl, abortController, tab, p
             buffer = buffer.slice(sep + 2);
 
             const had_exception = saw_exception;
+            /// After the display row limit, skip row payloads but keep draining progress, logs,
+            /// and profile events until the query finishes (aborting here drops final stats).
+            if (row_limit_reached)
+            {
+                let skip_rows = false;
+                for (const raw of block.split('\n'))
+                {
+                    if (raw.startsWith('event:'))
+                    {
+                        const evt = raw.slice(6).trim();
+                        skip_rows = (evt === 'data' || evt === 'totals' || evt === 'extremes');
+                        break;
+                    }
+                }
+                if (skip_rows)
+                    continue;
+            }
             dispatchEventStreamBlock(block, handleEvent);
             if (saw_exception && !had_exception) exception_block = block;
-
-            if (stop)
-            {
-                abortController.abort();
-                targetResultEl.finalizeMetrics();
-                return { reply, exception: saw_exception, exception_block, truncated: false };
-            }
         }
 
         if (done) break;
@@ -11716,7 +11835,7 @@ async function postSingle(tab, posted_request_num, query, history_query_text, pa
     tab.downloadUrl = query_url;
     tab.downloadUser = query_user;
 
-    if (result.is_raw || result.is_image) {
+    if (!el.elapsedNs) {
         el.elapsedNs = 1e6 * (performance.now() - query_start);
     }
     tab.finalStats = { rowCount: el.rowCount, elapsedNs: el.elapsedNs, incomplete: el.incompleteResult };
