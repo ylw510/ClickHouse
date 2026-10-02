@@ -33,6 +33,9 @@ FROM system.tables WHERE database = currentDatabase() AND name = 'tab';
 
 ALTER TABLE tab MODIFY SETTING exclude_materialize_statistics_on_merge = 'b';
 
+-- A background merge would build statistics before the first check.
+SYSTEM STOP MERGES tab;
+
 INSERT INTO tab SELECT number, number, toString(number) FROM numbers(100);
 INSERT INTO tab SELECT number + 100, number + 100, toString(number + 100) FROM numbers(100);
 
@@ -43,6 +46,7 @@ WHERE database = currentDatabase() AND table = 'tab' AND active
 GROUP BY column
 ORDER BY column;
 
+SYSTEM START MERGES tab;
 OPTIMIZE TABLE tab FINAL;
 
 SELECT 'After OPTIMIZE FINAL, column b is excluded from merge materialization';
