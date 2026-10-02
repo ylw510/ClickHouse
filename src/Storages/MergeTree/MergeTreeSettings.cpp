@@ -765,7 +765,7 @@ Statistics declared with `STATISTICS(...)` in the column definition are excluded
 
 Only merges are affected. INSERTs still build statistics for the excluded columns, depending on the
 [materialize_statistics_on_insert](/reference/settings/session-settings/materialize-statistics-on-insert#materialize_statistics_on_insert)
-session setting and [exclude_materialize_statistics_on_insert](/reference/settings/session-settings/materialize-statistics-on-insert#exclude_materialize_statistics_on_insert),
+session setting and [exclude_materialize_statistics_on_insert](/reference/settings/session-settings/other#exclude_materialize_statistics_on_insert),
 and so does an explicit [MATERIALIZE STATISTICS](/sql-reference/statements/alter/statistics.md) query. A merge does not
 keep them: the part it creates has no statistics for the excluded columns, even if all merged parts had them.
 
