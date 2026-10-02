@@ -19,3 +19,5 @@ Both b and `c,ol` are excluded from merge materialization
 a	1
 b	0
 c,ol	0
+A mutation that rewrites b builds statistics for it
+b	1

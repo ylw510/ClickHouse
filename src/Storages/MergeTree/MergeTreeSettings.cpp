@@ -749,6 +749,10 @@ OPTIMIZE FINAL query.
     Otherwise they can be created/stored by explicit [MATERIALIZE STATISTICS](/sql-reference/statements/alter/statistics.md)
     or [during INSERTs](/reference/settings/session-settings/materialize-statistics-on-insert#materialize_statistics_on_insert).
 
+Mutations do not use this setting. A mutation that rewrites a column, such as `ALTER TABLE ... UPDATE`, builds statistics
+for it, and one that rewrites a whole part, such as `ALTER TABLE ... DELETE` or a mutation of a compact part, builds
+statistics for all columns.
+
 See also [exclude_materialize_statistics_on_merge](#exclude_materialize_statistics_on_merge) for more fine-grained control.
 )", 0, \
         {"26.1", true, true, "New setting"}) \
@@ -764,6 +768,11 @@ Only merges are affected. INSERTs still build statistics for the excluded column
 session setting and [exclude_materialize_statistics_on_insert](/reference/settings/session-settings/materialize-statistics-on-insert#exclude_materialize_statistics_on_insert),
 and so does an explicit [MATERIALIZE STATISTICS](/sql-reference/statements/alter/statistics.md) query. A merge does not
 keep them: the part it creates has no statistics for the excluded columns, even if all merged parts had them.
+
+Mutations do not use the setting either, as they do not use `materialize_statistics_on_merge`. A mutation that rewrites
+an excluded column, such as `ALTER TABLE ... UPDATE`, builds statistics for it, and one that rewrites a whole part, such
+as `ALTER TABLE ... DELETE` or a mutation of a compact part, builds statistics for all columns, the excluded ones
+included.
 
 The query planner estimates a condition on a column from the parts that have statistics for the column, and applies
 the estimate to all parts. With the default `materialize_statistics_on_insert = 1`, only the inserted parts that have

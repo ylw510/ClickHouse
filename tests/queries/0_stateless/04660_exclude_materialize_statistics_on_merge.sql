@@ -88,4 +88,12 @@ FROM system.parts_columns
 WHERE database = currentDatabase() AND table = 'tab' AND active
 ORDER BY column;
 
+-- Mutations do not use the setting: rewriting b builds its statistics.
+ALTER TABLE tab UPDATE b = b + 1 WHERE 1;
+
+SELECT 'A mutation that rewrites b builds statistics for it';
+SELECT column, statistics != [] AS has_stats
+FROM system.parts_columns
+WHERE database = currentDatabase() AND table = 'tab' AND active AND column = 'b';
+
 DROP TABLE tab;
