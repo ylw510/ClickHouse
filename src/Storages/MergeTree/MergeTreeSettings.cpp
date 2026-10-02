@@ -774,6 +774,11 @@ special characters, such as a comma or a space, in backquotes or as a string lit
 columns of the table are ignored. `CREATE TABLE` and `ALTER TABLE` reject a value that is not such a list, and so
 does the server at startup if it is set in the `merge_tree` section of the configuration.
 
+The setting refers to columns by name, and `ALTER TABLE ... RENAME COLUMN` and `DROP COLUMN` do not change it. After
+column `b` is renamed to `b2`, merges build statistics for `b2` again, and a column that is added as `b` later is
+excluded. Change the setting in the same query, for example
+`ALTER TABLE tab RENAME COLUMN b TO b2, MODIFY SETTING exclude_materialize_statistics_on_merge = 'b2'`.
+
 Example:
 
 ```sql
