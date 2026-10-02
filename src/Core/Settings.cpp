@@ -2324,7 +2324,9 @@ columns of the table being inserted into are ignored. A value that is not such a
 with statistics fail, even if [materialize_statistics_on_insert_max_table_size](#materialize_statistics_on_insert_max_table_size)
 skips building the statistics.
 
-Has no effect if [materialize_statistics_on_insert](#materialize_statistics_on_insert) is false.
+Has no effect if [materialize_statistics_on_insert](#materialize_statistics_on_insert) is false, or on tables larger than
+[materialize_statistics_on_insert_max_table_size](#materialize_statistics_on_insert_max_table_size), because INSERTs build
+no statistics for them.
 
 Example:
 
@@ -2339,10 +2341,10 @@ ENGINE = MergeTree ORDER BY a
 SETTINGS auto_statistics_types = 'basic';
 
 SET materialize_statistics_on_insert = 1;
-SET exclude_materialize_statistics_on_insert = 'b'; -- statistics for `b` will not be updated upon insert
+SET exclude_materialize_statistics_on_insert = 'b'; -- inserted parts get no statistics for `b`
 --SET exclude_materialize_statistics_on_insert = 'b, c'; -- neither column would get statistics on insert
 
-INSERT INTO tab SELECT number, number, toString(number) FROM numbers(100); -- only `a` (and possibly `c`) get statistics
+INSERT INTO tab SELECT number, number, toString(number) FROM numbers(100); -- only `a` and `c` get statistics
 
 -- since it is a session setting it can be set on a per-query level
 INSERT INTO tab SELECT number, number, toString(number) FROM numbers(100, 100)
