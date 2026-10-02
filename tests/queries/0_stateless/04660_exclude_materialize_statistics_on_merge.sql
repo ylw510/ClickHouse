@@ -63,6 +63,17 @@ FROM system.parts_columns
 WHERE database = currentDatabase() AND table = 'tab' AND active
 ORDER BY column;
 
+-- The setting does not affect INSERTs, so the new part gets statistics for b too.
+INSERT INTO tab SELECT number + 200, number + 200, toString(number + 200) FROM numbers(100)
+SETTINGS materialize_statistics_on_insert = 1;
+OPTIMIZE TABLE tab FINAL;
+
+SELECT 'A merge drops the statistics of b, although all merged parts had them';
+SELECT column, statistics != [] AS has_stats
+FROM system.parts_columns
+WHERE database = currentDatabase() AND table = 'tab' AND active
+ORDER BY column;
+
 TRUNCATE TABLE tab;
 
 ALTER TABLE tab MODIFY SETTING exclude_materialize_statistics_on_merge = 'b, `c,ol`';

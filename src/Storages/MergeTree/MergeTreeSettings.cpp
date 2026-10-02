@@ -756,10 +756,17 @@ See also [exclude_materialize_statistics_on_merge](#exclude_materialize_statisti
 Excludes provided comma delimited list of columns from having statistics built and stored during merges. Has no effect if
 [materialize_statistics_on_merge](#materialize_statistics_on_merge) is false.
 
-The excluded columns' statistics will still be built and stored by an explicit
-[MATERIALIZE STATISTICS](/sql-reference/statements/alter/statistics.md) query or during INSERTs depending on
-the [materialize_statistics_on_insert](/reference/settings/session-settings/materialize-statistics-on-insert#materialize_statistics_on_insert)
-session setting and [exclude_materialize_statistics_on_insert](/reference/settings/session-settings/materialize-statistics-on-insert#exclude_materialize_statistics_on_insert).
+Only merges are affected. INSERTs still build statistics for the excluded columns, depending on the
+[materialize_statistics_on_insert](/reference/settings/session-settings/materialize-statistics-on-insert#materialize_statistics_on_insert)
+session setting and [exclude_materialize_statistics_on_insert](/reference/settings/session-settings/materialize-statistics-on-insert#exclude_materialize_statistics_on_insert),
+and so does an explicit [MATERIALIZE STATISTICS](/sql-reference/statements/alter/statistics.md) query. A merge does not
+keep them: the part it creates has no statistics for the excluded columns, even if all merged parts had them.
+
+The query planner estimates a condition on a column from the parts that have statistics for the column, and applies
+the estimate to all parts. With the default `materialize_statistics_on_insert = 1`, only the inserted parts that have
+not been merged yet have statistics for an excluded column, so estimates for it can be far off. Exclude the column
+with `exclude_materialize_statistics_on_insert` in the INSERTs into the table as well, so that no part has statistics
+for it.
 
 The value is a comma-separated list of column names. Names are case-sensitive. Write a name that contains
 special characters, such as a comma or a space, in backquotes or as a string literal. A column of a
