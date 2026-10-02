@@ -114,4 +114,26 @@ FROM system.parts_columns
 WHERE database = currentDatabase() AND table = 'tab' AND active
 ORDER BY column;
 
+TRUNCATE TABLE tab;
+SET exclude_materialize_statistics_on_insert = DEFAULT;
+
+-- The setting is not tied to a table: it applies to every table the INSERT writes to, here also to
+-- the target table of a materialized view.
+DROP TABLE IF EXISTS dst;
+DROP VIEW IF EXISTS mv;
+CREATE TABLE dst (a UInt64, b UInt64) ENGINE = MergeTree ORDER BY a
+SETTINGS enable_block_number_column = 0, enable_block_offset_column = 0, auto_statistics_types = 'basic';
+CREATE MATERIALIZED VIEW mv TO dst AS SELECT a, b FROM tab;
+
+INSERT INTO tab SELECT number, number, toString(number) FROM numbers(100)
+SETTINGS exclude_materialize_statistics_on_insert = 'b';
+
+SELECT 'The materialized view target is affected as well';
+SELECT DISTINCT table, column, statistics != [] AS has_stats
+FROM system.parts_columns
+WHERE database = currentDatabase() AND table IN ('tab', 'dst') AND active
+ORDER BY table, column;
+
+DROP VIEW mv;
+DROP TABLE dst;
 DROP TABLE tab;

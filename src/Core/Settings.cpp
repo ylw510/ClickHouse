@@ -2310,6 +2310,10 @@ Only build and store column statistics for newly inserted parts (see `materializ
 Excludes specified columns from having statistics built and stored during INSERTs. The excluded columns' statistics will still be built and stored [during merges](/reference/settings/merge-tree-settings/materialize#materialize_statistics_on_merge) or by an explicit
 [MATERIALIZE STATISTICS](/sql-reference/statements/alter/statistics.md) query.
 
+The setting is not tied to a table. It excludes the named columns in every MergeTree table the query writes to,
+including the target tables of materialized views, and if it is set in a settings profile, it applies to all
+INSERTs of the profile's users. Set it in the `SETTINGS` clause of the INSERTs it is meant for.
+
 The value is a comma-separated list of column names. Names are case-sensitive. Write a name that contains
 special characters, such as a comma or a space, in backquotes or as a string literal. A column of a
 [Nested](/reference/data-types/nested-data-structures/index) structure is written as `n.x`. Names that are not

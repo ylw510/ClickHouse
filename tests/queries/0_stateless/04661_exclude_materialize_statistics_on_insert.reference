@@ -24,3 +24,9 @@ After OPTIMIZE FINAL, merge materializes statistics for all columns
 a	1
 b	1
 c,ol	1
+The materialized view target is affected as well
+dst	a	1
+dst	b	0
+tab	a	1
+tab	b	0
+tab	c,ol	1
