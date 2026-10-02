@@ -791,6 +791,12 @@ column `b` is renamed to `b2`, merges build statistics for `b2` again, and a col
 excluded. Change the setting in the same query, for example
 `ALTER TABLE tab RENAME COLUMN b TO b2, MODIFY SETTING exclude_materialize_statistics_on_merge = 'b2'`.
 
+For `ReplicatedMergeTree`, `ALTER TABLE ... MODIFY SETTING` is not replicated, so give every replica the same value,
+for example with a separate `ALTER TABLE ... ON CLUSTER ... MODIFY SETTING` query. A query that also changes columns,
+like the `RENAME COLUMN` one above, changes the setting only on the replica that runs it. Replicas with different
+values merge the same parts into different parts: a replica whose merged part differs from the one of another replica
+logs an error, discards its part and downloads the other one.
+
 Example:
 
 ```sql
