@@ -953,8 +953,7 @@ bool MergeTask::ExecuteAndFinalizeHorizontalPart::prepare() const
     global_ctx->gathered_data.statistics = collectStatisticsToMaterialize(
         global_ctx->metadata_snapshot->getColumns(),
         (*merge_tree_settings)[MergeTreeSetting::materialize_statistics_on_merge],
-        (*merge_tree_settings)[MergeTreeSetting::exclude_materialize_statistics_on_merge].toString(),
-        global_ctx->context->getSettingsRef());
+        (*merge_tree_settings)[MergeTreeSetting::exclude_materialize_statistics_on_merge].toString());
 
     if (global_ctx->merge_may_reduce_rows)
     {

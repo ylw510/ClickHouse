@@ -760,6 +760,11 @@ The excluded columns' statistics will still be built and stored by an explicit
 the [materialize_statistics_on_insert](/reference/settings/session-settings/materialize-statistics-on-insert#materialize_statistics_on_insert)
 session setting and [exclude_materialize_statistics_on_insert](/reference/settings/session-settings/materialize-statistics-on-insert#exclude_materialize_statistics_on_insert).
 
+The value is a comma-separated list of column names. Names are case-sensitive. Write a name that contains
+special characters, such as a comma or a space, in backquotes or as a string literal. A column of a
+[Nested](/reference/data-types/nested-data-structures/index) structure is written as `n.x`. Names that are not
+columns of the table are ignored.
+
 Example:
 
 ```sql

@@ -917,8 +917,7 @@ MergeTreeTemporaryPartPtr MergeTreeDataWriter::writeTempPartImpl(
             statistics = collectStatisticsToMaterialize(
                 all_columns,
                 /*materialize_statistics=*/ true,
-                context->getSettingsRef()[Setting::exclude_materialize_statistics_on_insert].toString(),
-                context->getSettingsRef());
+                context->getSettingsRef()[Setting::exclude_materialize_statistics_on_insert].toString());
             /// A non-physical column is never present in a written block, so `build` below would
             /// reject it. Every other absence stays an error.
             std::erase_if(statistics, [&](const auto & entry) { return !all_columns.hasPhysical(entry.first); });

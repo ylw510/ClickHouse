@@ -2310,6 +2310,11 @@ Only build and store column statistics for newly inserted parts (see `materializ
 Excludes specified columns from having statistics built and stored during INSERTs. The excluded columns' statistics will still be built and stored [during merges](/reference/settings/merge-tree-settings/materialize#materialize_statistics_on_merge) or by an explicit
 [MATERIALIZE STATISTICS](/sql-reference/statements/alter/statistics.md) query.
 
+The value is a comma-separated list of column names. Names are case-sensitive. Write a name that contains
+special characters, such as a comma or a space, in backquotes or as a string literal. A column of a
+[Nested](/reference/data-types/nested-data-structures/index) structure is written as `n.x`. Names that are not
+columns of the table being inserted into are ignored.
+
 Has no effect if [materialize_statistics_on_insert](#materialize_statistics_on_insert) is false.
 
 Example:
