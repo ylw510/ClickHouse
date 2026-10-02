@@ -756,6 +756,9 @@ See also [exclude_materialize_statistics_on_merge](#exclude_materialize_statisti
 Excludes provided comma delimited list of columns from having statistics built and stored during merges. Has no effect if
 [materialize_statistics_on_merge](#materialize_statistics_on_merge) is false.
 
+Statistics declared with `STATISTICS(...)` in the column definition are excluded as well, not only those that
+[auto_statistics_types](#auto_statistics_types) adds.
+
 Only merges are affected. INSERTs still build statistics for the excluded columns, depending on the
 [materialize_statistics_on_insert](/reference/settings/session-settings/materialize-statistics-on-insert#materialize_statistics_on_insert)
 session setting and [exclude_materialize_statistics_on_insert](/reference/settings/session-settings/materialize-statistics-on-insert#exclude_materialize_statistics_on_insert),
