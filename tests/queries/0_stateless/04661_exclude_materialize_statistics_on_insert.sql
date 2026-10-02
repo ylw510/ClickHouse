@@ -20,6 +20,19 @@ SETTINGS
 
 INSERT INTO tab SELECT number, number, toString(number) FROM numbers(100)
 SETTINGS exclude_materialize_statistics_on_insert = '!@#$^#$&#$$%$,,.,3.45,45.'; -- { serverError CANNOT_PARSE_TEXT }
+INSERT INTO tab SELECT number, number, toString(number) FROM numbers(100)
+SETTINGS exclude_materialize_statistics_on_insert = 'b c'; -- { serverError CANNOT_PARSE_TEXT }
+-- The list is checked also when the table is too large to build statistics on INSERT.
+INSERT INTO tab SELECT number, number, toString(number) FROM numbers(100)
+SETTINGS exclude_materialize_statistics_on_insert = 'b c', materialize_statistics_on_insert_max_table_size = 1; -- { serverError CANNOT_PARSE_TEXT }
+SELECT 'Rows inserted with an invalid list', count() FROM tab;
+
+-- A table without statistics does not use the list, so an invalid one does not affect INSERTs into it.
+DROP TABLE IF EXISTS tab_no_stats;
+CREATE TABLE tab_no_stats (a UInt64, b UInt64) ENGINE = MergeTree ORDER BY a SETTINGS auto_statistics_types = '';
+INSERT INTO tab_no_stats SELECT number, number FROM numbers(10) SETTINGS exclude_materialize_statistics_on_insert = 'b c';
+SELECT 'Rows inserted into a table without statistics', count() FROM tab_no_stats;
+DROP TABLE tab_no_stats;
 
 SET exclude_materialize_statistics_on_insert = 'b';
 

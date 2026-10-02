@@ -52,10 +52,8 @@ TRUNCATE TABLE tab;
 
 SET materialize_statistics_on_insert = 0;
 
-ALTER TABLE tab MODIFY SETTING exclude_materialize_statistics_on_merge = 'a b';
-INSERT INTO tab SELECT number, [number], [number], number, number, number FROM numbers(10);
-OPTIMIZE TABLE tab FINAL; -- { serverError CANNOT_PARSE_TEXT }
-TRUNCATE TABLE tab;
+ALTER TABLE tab MODIFY SETTING exclude_materialize_statistics_on_merge = 'a b'; -- { serverError CANNOT_PARSE_TEXT }
+ALTER TABLE tab MODIFY SETTING exclude_materialize_statistics_on_merge = 'n.1'; -- { serverError CANNOT_PARSE_TEXT }
 
 ALTER TABLE tab MODIFY SETTING exclude_materialize_statistics_on_merge = '`n`.`y`, d.z, A';
 

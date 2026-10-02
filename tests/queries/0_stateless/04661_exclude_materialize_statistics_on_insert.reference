@@ -1,3 +1,5 @@
+Rows inserted with an invalid list	0
+Rows inserted into a table without statistics	10
 Column b is excluded on INSERT, so only a and `c,ol` have statistics
 a	1
 b	0

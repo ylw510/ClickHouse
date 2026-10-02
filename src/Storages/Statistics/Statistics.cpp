@@ -984,29 +984,24 @@ void addImplicitStatistics(ColumnsDescription & columns, const String & statisti
     }
 }
 
-ColumnsStatistics collectStatisticsToMaterialize(
-    const ColumnsDescription & columns,
-    bool materialize_statistics,
-    const String & exclude_columns_string)
+NameSet parseExcludeStatisticsColumns(const String & value, std::string_view setting_name)
 {
-    ColumnsStatistics statistics;
-    if (!materialize_statistics)
-        return statistics;
-
-    const NameSet exclude_column_names = parseColumnNameList(exclude_columns_string);
-
-    const auto & factory = MergeTreeStatisticsFactory::instance();
-    for (const auto & column : columns)
+    try
     {
-        if (column.statistics.empty())
-            continue;
-
-        if (exclude_column_names.contains(column.name))
-            continue;
-
-        statistics.emplace(column.name, factory.get(column));
+        return parseColumnNameList(value);
     }
+    catch (Exception & e)
+    {
+        e.addMessage("(in the value of setting '{}')", setting_name);
+        throw;
+    }
+}
 
+ColumnsStatistics collectStatisticsToMaterialize(const ColumnsDescription & columns, const NameSet & exclude_columns)
+{
+    ColumnsStatistics statistics(columns);
+    for (const auto & column_name : exclude_columns)
+        statistics.erase(column_name);
     return statistics;
 }
 

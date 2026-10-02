@@ -950,10 +950,16 @@ bool MergeTask::ExecuteAndFinalizeHorizontalPart::prepare() const
             addGatheringColumn(global_ctx, BlockOffsetColumn::name, BlockOffsetColumn::type);
     }
 
-    global_ctx->gathered_data.statistics = collectStatisticsToMaterialize(
-        global_ctx->metadata_snapshot->getColumns(),
-        (*merge_tree_settings)[MergeTreeSetting::materialize_statistics_on_merge],
-        (*merge_tree_settings)[MergeTreeSetting::exclude_materialize_statistics_on_merge].toString());
+    /// The exclusion list is parsed only if there are statistics to build, so that it cannot affect
+    /// the merges of a table without statistics.
+    if ((*merge_tree_settings)[MergeTreeSetting::materialize_statistics_on_merge] && global_ctx->metadata_snapshot->hasStatistics())
+    {
+        global_ctx->gathered_data.statistics = collectStatisticsToMaterialize(
+            global_ctx->metadata_snapshot->getColumns(),
+            parseExcludeStatisticsColumns(
+                (*merge_tree_settings)[MergeTreeSetting::exclude_materialize_statistics_on_merge].value,
+                "exclude_materialize_statistics_on_merge"));
+    }
 
     if (global_ctx->merge_may_reduce_rows)
     {

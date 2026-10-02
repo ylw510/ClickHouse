@@ -4,6 +4,11 @@ SET materialize_statistics_on_insert = 0;
 SET mutations_sync = 2;
 
 DROP TABLE IF EXISTS tab;
+DROP TABLE IF EXISTS tab_invalid;
+
+-- An invalid list is rejected when the table is created or altered, so that merges never fail because of it.
+CREATE TABLE tab_invalid (a UInt64, b UInt64) ENGINE = MergeTree ORDER BY a
+SETTINGS exclude_materialize_statistics_on_merge = 'a b'; -- { serverError CANNOT_PARSE_TEXT }
 
 CREATE TABLE tab
 (
@@ -19,11 +24,12 @@ SETTINGS
     auto_statistics_types = 'basic',
     materialize_statistics_on_merge = 1;
 
--- negative test case
-ALTER TABLE tab MODIFY SETTING exclude_materialize_statistics_on_merge = '!@#$^#$&#$$%$,,.,3.45,45.';
-INSERT INTO tab SELECT number, number, toString(number) FROM numbers(100);
-OPTIMIZE TABLE tab FINAL; -- { serverError CANNOT_PARSE_TEXT }
-TRUNCATE TABLE tab;
+ALTER TABLE tab MODIFY SETTING exclude_materialize_statistics_on_merge = '!@#$^#$&#$$%$,,.,3.45,45.'; -- { serverError CANNOT_PARSE_TEXT }
+ALTER TABLE tab MODIFY SETTING exclude_materialize_statistics_on_merge = 'b c'; -- { serverError CANNOT_PARSE_TEXT }
+ALTER TABLE tab MODIFY SETTING exclude_materialize_statistics_on_merge = 'b,'; -- { serverError CANNOT_PARSE_TEXT }
+ALTER TABLE tab MODIFY SETTING exclude_materialize_statistics_on_merge = '1+1'; -- { serverError CANNOT_PARSE_TEXT }
+SELECT 'The table setting is unchanged after the rejected ALTERs', engine_full NOT LIKE '%exclude_materialize_statistics_on_merge%'
+FROM system.tables WHERE database = currentDatabase() AND name = 'tab';
 
 ALTER TABLE tab MODIFY SETTING exclude_materialize_statistics_on_merge = 'b';
 

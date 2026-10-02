@@ -16,6 +16,7 @@
 #include <Parsers/FieldFromAST.h>
 #include <Parsers/isDiskFunction.h>
 #include <Storages/MergeTree/MergeTreeData.h>
+#include <Storages/Statistics/Statistics.h>
 #include <Storages/System/MutableColumnsAndConstraints.h>
 #include <Common/Exception.h>
 #include <Common/FieldVisitorToString.h>
@@ -763,7 +764,8 @@ session setting and [exclude_materialize_statistics_on_insert](/reference/settin
 The value is a comma-separated list of column names. Names are case-sensitive. Write a name that contains
 special characters, such as a comma or a space, in backquotes or as a string literal. A column of a
 [Nested](/reference/data-types/nested-data-structures/index) structure is written as `n.x`. Names that are not
-columns of the table are ignored.
+columns of the table are ignored. `CREATE TABLE` and `ALTER TABLE` reject a value that is not such a list, and so
+does the server at startup if it is set in the `merge_tree` section of the configuration.
 
 Example:
 
@@ -3200,6 +3202,11 @@ void MergeTreeSettingsImpl::sanityCheck(size_t background_pool_tasks, bool backg
         CompressionCodecFactory::instance().get(codec);
     if (auto codec = (*this)[MergeTreeSetting::default_compression_codec].value; !codec.empty())
         CompressionCodecFactory::instance().get(codec);
+
+    /// Merges parse the list. Reject an invalid one when the table metadata is created or altered, or the
+    /// server starts with it in the `merge_tree` config section, instead of letting every merge fail.
+    parseExcludeStatisticsColumns(
+        (*this)[MergeTreeSetting::exclude_materialize_statistics_on_merge].value, "exclude_materialize_statistics_on_merge");
 }
 
 void MergeTreeColumnSettings::validate(const SettingsChanges & changes)

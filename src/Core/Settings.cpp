@@ -2313,7 +2313,9 @@ Excludes specified columns from having statistics built and stored during INSERT
 The value is a comma-separated list of column names. Names are case-sensitive. Write a name that contains
 special characters, such as a comma or a space, in backquotes or as a string literal. A column of a
 [Nested](/reference/data-types/nested-data-structures/index) structure is written as `n.x`. Names that are not
-columns of the table being inserted into are ignored.
+columns of the table being inserted into are ignored. A value that is not such a list makes INSERTs into tables
+with statistics fail, even if [materialize_statistics_on_insert_max_table_size](#materialize_statistics_on_insert_max_table_size)
+skips building the statistics.
 
 Has no effect if [materialize_statistics_on_insert](#materialize_statistics_on_insert) is false.
 
