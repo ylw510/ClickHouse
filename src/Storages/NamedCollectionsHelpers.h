@@ -33,7 +33,10 @@ void checkNamedCollectionOverrideLock(const NamedCollection & collection, const 
 /// Then, replacing a stored key (including an alias) requires `SHOW NAMED COLLECTIONS SECRETS` in `context`.
 /// Replacing a stored `'auto'` value of `format` or `structure` is exempt, because ClickHouse appends the inferred values itself.
 /// The context is required and must not be null: a caller that loads an already authorized object uses `checkNamedCollectionOverrideLock`.
-void checkNamedCollectionOverride(const NamedCollection & collection, const std::string & key, ContextPtr context);
+/// If `is_replayed_definition`, replacing such a stored `'auto'` also passes `NOT OVERRIDABLE`:
+/// a stored definition keeps the values ClickHouse inferred when it was created.
+void checkNamedCollectionOverride(
+    const NamedCollection & collection, const std::string & key, ContextPtr context, bool is_replayed_definition = false);
 
 /// Checks the overrides of the stored keys in the source of a dictionary at its creation, attachment or restore.
 /// `config_prefix` is the source configuration "<dict_root>.source.<type>" (e.g. "dictionary.source.clickhouse").
@@ -46,13 +49,15 @@ void checkNamedCollectionOverridesInDictionarySource(
 /// Table engines have collection name as first argument of ast and other arguments are key-value overrides.
 /// If `dependent_table_id` is provided, registers the table as a dependency of the named collection.
 /// Checks overrides in `SETTINGS` before the engine applies them.
+/// `is_replayed_definition` is passed to `checkNamedCollectionOverride` for the key-value overrides.
 MutableNamedCollectionPtr tryGetNamedCollectionWithOverrides(
     ASTs asts,
     ContextPtr context,
     bool throw_unknown_collection = true,
     VectorWithMemoryTracking<std::pair<std::string, ASTPtr>> * complex_args = nullptr,
     const StorageID * dependent_table_id = nullptr,
-    const ASTSetQuery * settings = nullptr);
+    const ASTSetQuery * settings = nullptr,
+    bool is_replayed_definition = false);
 
 /// Helper function to get named collection for dictionary source.
 /// Dictionaries have the collection name as the `name` argument of their configuration.
