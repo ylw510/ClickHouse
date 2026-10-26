@@ -155,6 +155,9 @@ public:
     /// Returns true if the storage supports queries with the SAMPLE section.
     virtual bool supportsSampling() const;
 
+    /// Bernoulli SAMPLE for storages without SAMPLE BY (`file` / `url` / `s3` / `numbers`).
+    virtual bool supportsGenericSampling() const { return false; }
+
     /// Returns true if the storage supports queries with the FINAL section.
     virtual bool supportsFinal() const { return false; }
 

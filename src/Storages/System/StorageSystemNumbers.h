@@ -74,6 +74,9 @@ public:
     bool isSystemStorage() const override { return true; }
     bool supportsTransactions() const override { return true; }
 
+    bool supportsSampling() const override { return true; }
+    bool supportsGenericSampling() const override { return true; }
+
 private:
     friend class ReadFromSystemNumbersStep;
 

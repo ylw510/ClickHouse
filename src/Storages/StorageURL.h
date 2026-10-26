@@ -61,6 +61,9 @@ public:
 
     bool supportsPartitionBy() const override { return true; }
 
+    bool supportsSampling() const override { return true; }
+    bool supportsGenericSampling() const override { return true; }
+
     static ColumnsDescription getTableStructureFromData(
         const String & format,
         const String & uri,

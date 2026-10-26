@@ -161,6 +161,7 @@ public:
     /// broken Alias. Advisory capability probes used for optimization, routing, execution strategy, or system-table
     /// metadata fail closed (return false).
     bool supportsSampling() const override { return getTargetTable()->supportsSampling(); }
+    bool supportsGenericSampling() const override { return getTargetTable()->supportsGenericSampling(); }
     bool supportsFinal() const override { return getTargetTable()->supportsFinal(); }
     bool supportsSubcolumns() const override { return getTargetTable()->supportsSubcolumns(); }
     bool supportsColumnsWithDynamicStructure() const override { return getTargetTable()->supportsColumnsWithDynamicStructure(); }

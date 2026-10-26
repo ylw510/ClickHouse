@@ -112,6 +112,9 @@ public:
 
     bool supportsPartitionBy() const override { return true; }
 
+    bool supportsSampling() const override { return true; }
+    bool supportsGenericSampling() const override { return true; }
+
     bool supportsSubcolumns() const override { return true; }
 
     /// Reading a `.null`/`.size0`/... subcolumn does not skip reading the parent column from

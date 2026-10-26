@@ -3,6 +3,7 @@
 #include <QueryPipeline/QueryPipelineBuilder.h>
 #include <Core/Settings.h>
 #include <Storages/ObjectStorage/StorageObjectStorageSource.h>
+#include <Storages/GenericSampling.h>
 #include <Interpreters/ActionsDAG.h>
 #include <Processors/Sources/NullSource.h>
 #include <Processors/QueryPlan/Serialization.h>
@@ -187,6 +188,7 @@ void ReadFromObjectStorageStep::initializePipeline(QueryPipelineBuilder & pipeli
         configuration->getColumnMapperForCurrentSchema(storage_snapshot->metadata, context),
         query_info.row_level_filter,
         query_info.prewhere_info);
+    GenericSampling::attachToFormatFilter(*format_filter_info, query_info);
     format_filter_info->top_k_filter = top_k_filter;
     auto top_k_query_condition_cache_key = makeTopKQueryConditionCacheKey();
     if (top_k_query_condition_cache_key)

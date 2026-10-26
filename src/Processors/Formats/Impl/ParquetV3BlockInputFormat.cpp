@@ -22,6 +22,7 @@
 #include <Processors/Formats/Impl/Parquet/SchemaConverter.h>
 #include <Storages/MergeTree/ColumnsCache.h>
 #include <Storages/MergeTree/KeyCondition.h>
+#include <Storages/GenericSampling.h>
 
 namespace ProfileEvents
 {
@@ -243,7 +244,18 @@ void ParquetV3BlockInputFormat::initializeIfNeeded()
                 }
                 reader->reader.max_key_condition_column_ranges_bytes = kept_statistics.remainingBytes();
             }
-            reader->init(parser_shared_resources, buckets_to_read ? std::optional(buckets_to_read->row_group_ids) : std::nullopt);
+            std::optional<std::vector<size_t>> sampled_buckets
+                = buckets_to_read ? std::optional(buckets_to_read->row_group_ids) : std::nullopt;
+            if (format_filter_info && format_filter_info->generic_sample)
+            {
+                const String & sample_path = object_with_metadata ? object_with_metadata->relative_path : String{};
+                sampled_buckets = GenericSampling::filterRowGroups(
+                    sample_path,
+                    reader->reader.file_metadata().row_groups.size(),
+                    *format_filter_info->generic_sample,
+                    sampled_buckets);
+            }
+            reader->init(parser_shared_resources, sampled_buckets);
             /// Not after the miss that inserted the cell: replacing it would move it to SLRU's protected queue.
             if (cache_hit)
                 metadata_cache->addColumnChunks(*cache_key, cache_cell, reader->reader.getColumnChunks());

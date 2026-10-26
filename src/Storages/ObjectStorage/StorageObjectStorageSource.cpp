@@ -1124,6 +1124,7 @@ Chunk StorageObjectStorageSource::generate()
         /// TopK key made it skip row groups that the predicate alone would not, or
         /// `use_query_condition_cache_for_top_k` is off, which makes a TopN read not populate the cache at all.
         else if (format_filter_info->condition_hash && !reader.skipped_row_groups_by_top_k_entry
+            && !format_filter_info->generic_sample
             && !(format_filter_info->top_k_filter && !read_context->getSettingsRef()[Setting::use_query_condition_cache_for_top_k])
             && !(reader.getInputFormat() && reader.getInputFormat()->isTopKFilterApplied()))
         {
@@ -1715,6 +1716,7 @@ StorageObjectStorageSource::ReaderHolder StorageObjectStorageSource::createReade
                     /// that need to resolve query-side filter column names (e.g. GeoParquet spatial
                     /// pruning) back to a field_id.
                     result->current_schema_column_mapper = format_filter_info->column_mapper;
+                    result->generic_sample = format_filter_info->generic_sample;
                     if (top_k_filter_allowed)
                         result->top_k_filter = format_filter_info->top_k_filter;
                     return result;
@@ -1728,11 +1730,15 @@ StorageObjectStorageSource::ReaderHolder StorageObjectStorageSource::createReade
                 column_mapper = configuration->getColumnMapperForObject(object_info);
 
             if (!format_supports_prewhere)
-                return std::make_shared<FormatFilterInfo>(
+            {
+                auto result = std::make_shared<FormatFilterInfo>(
                     format_filter_info->filter_actions_dag,
                     format_filter_info->context.lock(),
                     column_mapper,
                     nullptr, nullptr);
+                result->generic_sample = format_filter_info->generic_sample;
+                return result;
+            }
 
             if (filters_substituted || (format_filter_info->top_k_filter && !top_k_filter_allowed)
                 || column_mapper != format_filter_info->column_mapper)
@@ -1742,6 +1748,7 @@ StorageObjectStorageSource::ReaderHolder StorageObjectStorageSource::createReade
                     format_filter_info->context.lock(),
                     column_mapper,
                     row_level_filter, prewhere_info);
+                result->generic_sample = format_filter_info->generic_sample;
                 if (top_k_filter_allowed)
                     result->top_k_filter = format_filter_info->top_k_filter;
                 return result;
@@ -1761,6 +1768,8 @@ StorageObjectStorageSource::ReaderHolder StorageObjectStorageSource::createReade
                 filter_info ? filter_info->row_level_filter : nullptr,
                 filter_info ? filter_info->prewhere_info : nullptr);
             filter_info_with_rows->rows_to_read = object_info->rows_to_read;
+            if (filter_info)
+                filter_info_with_rows->generic_sample = filter_info->generic_sample;
             filter_info = filter_info_with_rows;
         }
 

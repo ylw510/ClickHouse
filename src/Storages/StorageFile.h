@@ -148,6 +148,9 @@ public:
 
     bool supportsPartitionBy() const override { return true; }
 
+    bool supportsSampling() const override { return true; }
+    bool supportsGenericSampling() const override { return true; }
+
     static ColumnsDescription getTableStructureFromFile(
         const String & format,
         const std::vector<String> & paths,

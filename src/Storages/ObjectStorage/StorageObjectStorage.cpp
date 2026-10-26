@@ -1,4 +1,5 @@
 #include <Storages/ObjectStorage/StorageObjectStorage.h>
+#include <Storages/GenericSampling.h>
 
 #include <Analyzer/ArrayJoinNode.h>
 #include <Analyzer/QueryNode.h>
@@ -947,12 +948,13 @@ void StorageObjectStorage::read(
     if (query_info.prewhere_info)
         read_from_format_info = updateFormatPrewhereInfo(read_from_format_info, query_info.prewhere_info);
 
-    const bool need_only_count = (query_info.optimize_trivial_count
+    bool need_only_count = (query_info.optimize_trivial_count
                                   || (read_from_format_info.requested_columns.empty()
                                       && !read_from_format_info.prewhere_info))
         && settings[Setting::optimize_count_from_files]
         && !query_info.row_level_filter
         && !VirtualColumnUtils::hasRowDependentVirtualColumns(read_from_format_info.requested_virtual_columns);
+    GenericSampling::adjustReadFlags(query_info, configuration->format, need_only_count);
 
     auto modified_format_settings{format_settings};
     if (!modified_format_settings.has_value())

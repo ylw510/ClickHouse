@@ -122,6 +122,8 @@ private:
 
 using ColumnMapperPtr = std::shared_ptr<ColumnMapper>;
 
+struct GenericSampleInterval;
+
 struct FormatFilterInfo;
 using FormatFilterInfoPtr = std::shared_ptr<FormatFilterInfo>;
 
@@ -183,6 +185,9 @@ struct FormatFilterInfo
 
     /// The caller calls `IInputFormat::cacheFilterColumnStatistics` after reading a file.
     bool keep_filter_column_statistics = false;
+
+    /// Generic SAMPLE for table functions: Parquet keeps a hash-range of row groups.
+    std::shared_ptr<const GenericSampleInterval> generic_sample;
 private:
     /// For lazily initializing the fields above.
     std::once_flag init_flag;

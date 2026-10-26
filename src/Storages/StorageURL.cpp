@@ -1,4 +1,5 @@
 #include <Storages/StorageURL.h>
+#include <Storages/GenericSampling.h>
 #include <Storages/ObjectStorage/S3/S3SecretArguments.h>
 #include <Storages/StorageProxy.h>
 #include <Storages/StorageFile.h>
@@ -1056,7 +1057,8 @@ Chunk StorageURLSource::generate()
         /// running threshold had excluded it, so such a read must not record it as having no match for
         /// the predicate. A cancelled read may stop before it has seen every row group, and the ones it
         /// has not read report no matching rows either.
-        if (read_whole_file && input_format && current_query_condition_cache_file_key && !input_format->isTopKFilterApplied())
+        if (read_whole_file && input_format && current_query_condition_cache_file_key && !input_format->isTopKFilterApplied()
+            && !(format_filter_info && format_filter_info->generic_sample))
             writeQueryConditionCacheEntry();
 
         releaseReader();
@@ -2083,6 +2085,7 @@ void IStorageURLBase::read(
         && local_context->getSettingsRef()[Setting::optimize_count_from_files]
         && !query_info.row_level_filter
         && !VirtualColumnUtils::hasRowDependentVirtualColumns(read_from_format_info.requested_virtual_columns);
+    GenericSampling::adjustReadFlags(query_info, format_name, need_only_count);
 
     auto read_post_data_callback = getReadPOSTDataCallback(
         read_from_format_info.columns_description.getNamesOfPhysical(),
@@ -2187,6 +2190,7 @@ void ReadFromURL::initializePipeline(QueryPipelineBuilder & pipeline, const Buil
     auto parser_shared_resources = std::make_shared<FormatParserSharedResources>(settings, num_streams);
     auto format_filter_info = std::make_shared<FormatFilterInfo>(
         info.getFormatFilter(filter_actions_dag), context, nullptr, query_info.row_level_filter, query_info.prewhere_info);
+    GenericSampling::attachToFormatFilter(*format_filter_info, query_info);
     format_filter_info->top_k_filter = top_k_filter;
 
     for (size_t i = 0; i < num_streams; ++i)
@@ -2261,6 +2265,7 @@ void StorageURLWithFailover::read(
         && local_context->getSettingsRef()[Setting::optimize_count_from_files]
         && !query_info.row_level_filter
         && !VirtualColumnUtils::hasRowDependentVirtualColumns(read_from_format_info.requested_virtual_columns);
+    GenericSampling::adjustReadFlags(query_info, format_name, need_only_count);
 
     auto read_post_data_callback = getReadPOSTDataCallback(
         read_from_format_info.columns_description.getNamesOfPhysical(),

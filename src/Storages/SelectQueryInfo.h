@@ -236,6 +236,10 @@ struct SelectQueryInfo
     std::optional<TableExpressionModifiers::Rational> getSampleSizeRatio() const;
     std::optional<TableExpressionModifiers::Rational> getSampleOffsetRatio() const;
 
+    /// Set when Parquet already applied generic SAMPLE at row-group level, so the planner
+    /// must not add a second Bernoulli FilterStep.
+    bool generic_sample_applied = false;
+
     /// Analyzer generates unique ColumnIdentifiers like __table1.__partition_id in filter nodes,
     /// while key analysis still requires unqualified column names.
     /// This function generates a map that maps the unique names to table column names,

@@ -1,4 +1,5 @@
 #include <Storages/StorageFile.h>
+#include <Storages/GenericSampling.h>
 #include <Storages/StorageFactory.h>
 #include <Storages/ColumnsDescription.h>
 #include <Storages/StorageInMemoryMetadata.h>
@@ -2486,7 +2487,7 @@ Chunk StorageFileSource::generate()
             {
                 auto buckets_opt = input_format->getMatchedBuckets();
                 const String cache_file_key = QueryConditionCache::makeFilePartName(current_path, *current_file_cache_version);
-                if (buckets_opt.has_value() && format_filter_info->top_k_filter)
+                if (buckets_opt.has_value() && format_filter_info->top_k_filter && !format_filter_info->generic_sample)
                 {
                     if (getTopKConditionHashForCurrentFile())
                         pending_top_k_query_condition_cache_entries.push_back(PendingTopKQueryConditionCacheEntry{
@@ -2495,7 +2496,7 @@ Chunk StorageFileSource::generate()
                             .matched_row_groups = std::move(buckets_opt->first),
                             .best_values = input_format->getTopKBestValuesOfBuckets()});
                 }
-                else if (buckets_opt.has_value() && format_filter_info->condition_hash)
+                else if (buckets_opt.has_value() && format_filter_info->condition_hash && !format_filter_info->generic_sample)
                 {
                     writeQueryConditionCacheEntry(
                         query_condition_cache_table_id,
@@ -2810,6 +2811,7 @@ void StorageFile::read(
         && context->getSettingsRef()[Setting::optimize_count_from_files]
         && !query_info.row_level_filter
         && !VirtualColumnUtils::hasRowDependentVirtualColumns(read_from_format_info.requested_virtual_columns);
+    GenericSampling::adjustReadFlags(query_info, format_name, need_only_count);
 
     auto reading = std::make_unique<ReadFromFile>(
         column_names,
@@ -2943,6 +2945,7 @@ void ReadFromFile::initializePipeline(QueryPipelineBuilder & pipeline, const Bui
     auto parser_shared_resources = std::make_shared<FormatParserSharedResources>(ctx->getSettingsRef(), num_streams);
     auto format_filter_info = std::make_shared<FormatFilterInfo>(
         info.getFormatFilter(filter_actions_dag), ctx, nullptr, query_info.row_level_filter, query_info.prewhere_info);
+    GenericSampling::attachToFormatFilter(*format_filter_info, query_info);
     format_filter_info->top_k_filter = top_k_filter;
     format_filter_info->min_max_from_statistics = read_min_max_from_statistics && !filter_actions_dag
         && !query_info.prewhere_info && !query_info.row_level_filter;

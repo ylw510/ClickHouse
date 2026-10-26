@@ -96,6 +96,7 @@
 #include <QueryPipeline/QueryPipelineBuilder.h>
 
 #include <Storages/ColumnsDescription.h>
+#include <Storages/GenericSampling.h>
 #include <Storages/StorageAlias.h>
 #include <Storages/getEffectiveRowPolicyFilter.h>
 #include <Storages/StorageDistributed.h>
@@ -2910,6 +2911,8 @@ void InterpreterSelectQuery::executeFetchColumns(QueryProcessingStage::Enum proc
             auto header = storage_snapshot->getSampleBlockForColumns(required_columns);
             addEmptySourceToQueryPlan(query_plan, header, query_info);
         }
+
+        GenericSampling::addFilterStepIfNeeded(query_plan, *storage, query_info, context);
     }
     else
         throw Exception(ErrorCodes::LOGICAL_ERROR, "Logical error in InterpreterSelectQuery: nowhere to read");
