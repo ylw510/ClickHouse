@@ -202,3 +202,13 @@ Do not try/catch exceptions to fall back to a less-optimized case. Let the excep
 Prefer functional (.sql/.sh) tests over unit (gtest) tests whenever possible. Unit tests are larger, too specific, and they are difficult to maintain.
 
 When you want to test changes in the CI scripts, you can write and run a throwaway test, but you don't need to commit it to the repository, because we don't have automated CI tests.
+
+## Cursor Cloud specific instructions
+
+Do not compile ClickHouse in this Cloud Agent environment. Use the official stable binary installed by `clickhousectl`.
+
+- `clickhousectl`, `chctl`, and `clickhouse` are on the default `PATH` via `/usr/local/bin`.
+- Boot runs `clickhousectl local server start` from the repository root when the server named `default` is not already running. HTTP is `8123` and native TCP is `9000`.
+- Run `clickhousectl` local commands from the repository root. The server is scoped to that directory and does not search parent directories.
+- Query with `clickhousectl local client -q "SELECT 1"`.
+- Server files are under `.clickhouse/`. `clickhousectl` writes a `.gitignore` there so that data stays out of git.
