@@ -9,6 +9,9 @@
 #include <Storages/StorageProxy.h>
 #include <Storages/SubcolumnCodecs.h>
 #include <Storages/MergeTree/MergeTreeData.h>
+#include <Storages/MergeTree/LoadedMergeTreeDataPartInfoForReader.h>
+#include <Storages/MergeTree/MergeTreeIndexReader.h>
+#include <Storages/MergeTree/VectorSimilarityIndexCache.h>
 #include <Storages/PartitionCommands.h>
 #include <Common/CurrentThread.h>
 #include <Common/ThreadGroupSwitcher.h>
@@ -428,6 +431,7 @@ namespace ServerSetting
     extern const ServerSettingsDouble primary_index_cache_prewarm_ratio;
     extern const ServerSettingsDouble statistics_cache_prewarm_ratio;
     extern const ServerSettingsDouble index_mark_cache_prewarm_ratio;
+    extern const ServerSettingsDouble vector_similarity_index_cache_prewarm_ratio;
 }
 
 namespace FailPoints
@@ -4689,6 +4693,125 @@ void MergeTreeData::prewarmCaches(ThreadPool & pool, const CachesToPrewarm & cac
 
     runner.waitForAllToFinishAndRethrowFirstError();
     LOG_TRACE(log, "Prewarmed caches in {:.3f} seconds", watch.elapsedSeconds());
+}
+
+void MergeTreeData::dropVectorSimilarityIndexCache(
+    VectorSimilarityIndexCache & cache,
+    const std::optional<String> & index_file_name) const
+{
+    auto data_parts = getDataPartsVectorForInternalUsage();
+    for (const auto & part : data_parts)
+    {
+        const String path = part->getDataPartStorage().getDiskName() + ":" + part->getRelativePathOfActivePart();
+        cache.removeEntriesFromCache(path, index_file_name);
+    }
+}
+
+void MergeTreeData::prewarmVectorSimilarityIndexCache(
+    ThreadPool & pool,
+    VectorSimilarityIndexCache & cache,
+    const std::optional<String> & index_name)
+{
+    auto metadata_snapshot = getInMemoryMetadataPtr(getContext(), false);
+    MergeTreeIndices indexes;
+    for (const auto & desc : metadata_snapshot->getSecondaryIndices())
+    {
+        if (desc.type != "vector_similarity")
+            continue;
+        if (index_name && desc.name != *index_name)
+            continue;
+        indexes.push_back(MergeTreeIndexFactory::instance().get(metadata_snapshot, desc, *getSettings()));
+    }
+
+    if (indexes.empty())
+    {
+        if (index_name)
+            throw Exception(
+                ErrorCodes::BAD_ARGUMENTS,
+                "Table {} has no vector similarity index named {}",
+                getStorageID().getNameForLogs(),
+                backQuote(*index_name));
+        throw Exception(
+            ErrorCodes::BAD_ARGUMENTS,
+            "Table {} has no vector similarity index",
+            getStorageID().getNameForLogs());
+    }
+
+    Stopwatch watch;
+    LOG_TRACE(log, "Prewarming vector similarity index cache");
+
+    auto data_parts = getDataPartsVectorForInternalUsage();
+    auto to_tuple = [](const auto & part)
+    {
+        return std::make_tuple(part->getMinMaxDate().second, part->getMinMaxTime().second, part->modification_time);
+    };
+    std::sort(data_parts.begin(), data_parts.end(), [&to_tuple](const auto & lhs, const auto & rhs)
+    {
+        return to_tuple(lhs) > to_tuple(rhs);
+    });
+
+    const double ratio_to_prewarm = getContext()->getServerSettings()[ServerSetting::vector_similarity_index_cache_prewarm_ratio];
+    auto enough_space = [&cache, ratio_to_prewarm]()
+    {
+        return static_cast<double>(cache.sizeInBytes()) < static_cast<double>(cache.maxSizeInBytes()) * ratio_to_prewarm;
+    };
+
+    auto mark_cache = getContext()->getIndexMarkCache();
+    auto uncompressed_cache = getContext()->getIndexUncompressedCache();
+
+    ThreadPoolCallbackRunnerLocal<void> runner(pool, ThreadName::MERGETREE_PREWARM_CACHE);
+
+    for (const auto & part : data_parts)
+    {
+        if (!enough_space())
+            break;
+
+        for (const auto & index : indexes)
+        {
+            runner.enqueueAndKeepTrack(
+                [part, index, &cache, mark_cache, uncompressed_cache, enough_space, current_component = Coordination::getCurrentComponent()]
+                {
+                    auto component_guard = Coordination::setCurrentComponent(current_component);
+                    if (!enough_space())
+                        return;
+
+                    auto alter_conversions = std::make_shared<AlterConversions>();
+                    auto part_info = std::make_shared<LoadedMergeTreeDataPartInfoForReader>(part, alter_conversions);
+                    if (!index->getDeserializedFormat(*part_info, index->getFileName()))
+                        return;
+
+                    const auto skip_index_granularity = index->getGranularity();
+                    const auto & index_granularity = part_info->getIndexGranularity();
+                    const size_t skip_marks = index_granularity.getMarksCountForSkipIndex(skip_index_granularity);
+                    if (skip_marks == 0)
+                        return;
+
+                    MarkRanges ranges{MarkRange(0, skip_marks)};
+                    MergeTreeReaderSettings reader_settings;
+                    MergeTreeIndexReader reader(
+                        index,
+                        part_info,
+                        skip_marks,
+                        ranges,
+                        mark_cache.get(),
+                        uncompressed_cache.get(),
+                        &cache,
+                        reader_settings,
+                        /*interruptible_marks_read=*/ true);
+
+                    for (size_t mark = 0; mark < skip_marks; ++mark)
+                    {
+                        if (!enough_space())
+                            return;
+                        MergeTreeIndexGranulePtr granule;
+                        reader.read(mark, /*condition=*/ nullptr, granule, /*readable_ranges=*/ nullptr);
+                    }
+                });
+        }
+    }
+
+    runner.waitForAllToFinishAndRethrowFirstError();
+    LOG_TRACE(log, "Prewarmed vector similarity index cache in {:.3f} seconds", watch.elapsedSeconds());
 }
 
 /// Is the part directory old.

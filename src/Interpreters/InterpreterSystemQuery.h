@@ -110,6 +110,8 @@ private:
 
     void prewarmMarkCache();
     void prewarmPrimaryIndexCache();
+    void prewarmVectorSimilarityIndexCache();
+    void clearVectorSimilarityIndexCacheForTable();
     void clearTimeSeriesCaches();
 
     void stopReplicatedDDLQueries();

@@ -493,6 +493,38 @@ bool ParserSystemQuery::parseImpl(IParser::Pos & pos, ASTPtr & node, Expected & 
             break;
         }
 
+        case Type::CLEAR_VECTOR_SIMILARITY_INDEX_CACHE:
+        case Type::PREWARM_VECTOR_SIMILARITY_INDEX_CACHE:
+        {
+            if (!parseQueryWithOnCluster(res, pos, expected))
+                return false;
+
+            const bool table_required = res->type == Type::PREWARM_VECTOR_SIMILARITY_INDEX_CACHE;
+            if (ParserKeyword{Keyword::FOR}.ignore(pos, expected))
+            {
+                if (!ParserKeyword{Keyword::TABLE}.ignore(pos, expected))
+                    return false;
+                if (!parseDatabaseAndTableAsAST(pos, expected, res->database, res->table))
+                    return false;
+                if (ParserKeyword{Keyword::INDEX}.ignore(pos, expected))
+                {
+                    if (!ParserIdentifier{}.parse(pos, res->index, expected))
+                        return false;
+                }
+            }
+            else if (table_required)
+            {
+                expected.add(pos, "FOR TABLE");
+                return false;
+            }
+            else if (ParserKeyword{Keyword::INDEX}.checkWithoutMoving(pos, expected))
+            {
+                expected.add(pos, "FOR TABLE before INDEX");
+                return false;
+            }
+            break;
+        }
+
         case Type::SYNC_DATABASE_REPLICA:
         {
             if (!parseQueryWithOnCluster(res, pos, expected))
@@ -1149,6 +1181,8 @@ bool ParserSystemQuery::parseImpl(IParser::Pos & pos, ASTPtr & node, Expected & 
         res->children.push_back(res->database);
     if (res->table)
         res->children.push_back(res->table);
+    if (res->index)
+        res->children.push_back(res->index);
     if (res->query_settings)
         res->children.push_back(res->query_settings);
 
@@ -1306,7 +1340,19 @@ Clears the userspace page cache, ClickHouse's own in-memory cache of data read f
 
 ## SYSTEM CLEAR|DROP VECTOR SIMILARITY INDEX CACHE {#drop-vector-similarity-index-cache}
 
-Clears the vector similarity index cache.
+Clears deserialized HNSW granules from the vector similarity index cache. Without `FOR TABLE`, every cached granule on the server is dropped. With `FOR TABLE`, only granules of that table are dropped; `INDEX name` further limits the drop to one vector similarity index.
+
+```sql
+SYSTEM {DROP | CLEAR} VECTOR SIMILARITY INDEX CACHE [ON CLUSTER cluster_name] [FOR TABLE [db.]table [INDEX index_name]]
+```
+
+## SYSTEM PREWARM VECTOR SIMILARITY INDEX CACHE {#prewarm-vector-similarity-index-cache}
+
+Loads deserialized HNSW granules of a `MergeTree` table into the [vector similarity index cache](#drop-vector-similarity-index-cache). `INDEX name` limits the load to one vector similarity index. Loading stops when the cache reaches `vector_similarity_index_cache_prewarm_ratio` of its configured size.
+
+```sql
+SYSTEM PREWARM VECTOR SIMILARITY INDEX CACHE [ON CLUSTER cluster_name] FOR TABLE [db.]table [INDEX index_name]
+```
 
 ## SYSTEM CLEAR|DROP CONNECTIONS CACHE {#drop-connections-cache}
 

@@ -5,6 +5,8 @@
 #include <Common/SipHash.h>
 #include <Storages/MergeTree/MergeTreeIndices.h>
 
+#include <optional>
+
 namespace ProfileEvents
 {
     extern const Event VectorSimilarityIndexCacheMisses;
@@ -112,7 +114,18 @@ public:
 
     void removeEntriesFromCache(const String & path_to_data_part)
     {
-        Base::remove([path_to_data_part](const Key & key, const MappedPtr &) { return key.path_to_data_part == path_to_data_part; });
+        removeEntriesFromCache(path_to_data_part, /*index_file_name=*/ {});
+    }
+
+    void removeEntriesFromCache(const String & path_to_data_part, const std::optional<String> & index_file_name)
+    {
+        Base::remove(
+            [path_to_data_part, index_file_name](const Key & key, const MappedPtr &)
+            {
+                if (key.path_to_data_part != path_to_data_part)
+                    return false;
+                return !index_file_name || key.index_name == *index_file_name;
+            });
     }
 
 private:

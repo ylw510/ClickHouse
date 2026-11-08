@@ -83,6 +83,7 @@ enum class MergeTreePartMinMaxIndexColumns : uint64_t;
 
 class MarkCache;
 using MarkCachePtr = std::shared_ptr<MarkCache>;
+class VectorSimilarityIndexCache;
 
 /// Throws if an index or primary-key expression list contains a duplicate sub-expression (unless allow_suspicious_indices)
 void checkSuspiciousIndices(const ASTFunction * index_function);
@@ -784,6 +785,19 @@ public:
 
     /// Prewarm mark cache, index mark cache, primary index cache and statistics cache for the most recent data parts.
     void prewarmCaches(ThreadPool & pool, const CachesToPrewarm & caches);
+
+    /// Load deserialized `vector_similarity` granules into `cache`. `index_name` is the user-facing
+    /// `INDEX` name; unset means every vector similarity index of the table.
+    void prewarmVectorSimilarityIndexCache(
+        ThreadPool & pool,
+        VectorSimilarityIndexCache & cache,
+        const std::optional<String> & index_name);
+
+    /// Drop cache entries of this table's active parts. `index_file_name` is `IMergeTreeIndex::getFileName()`
+    /// (not the DDL name); unset means every vector similarity index of the table.
+    void dropVectorSimilarityIndexCache(
+        VectorSimilarityIndexCache & cache,
+        const std::optional<String> & index_file_name) const;
 
     String getLogName() const { return log.loadName(); }
 
