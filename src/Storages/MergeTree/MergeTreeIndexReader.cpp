@@ -1,6 +1,7 @@
 #include <Storages/MergeTree/MergeTreeIndexReader.h>
 #include <Interpreters/Context.h>
 #include <Storages/MergeTree/IMergeTreeDataPart.h>
+#include <Storages/MergeTree/MergeTreeData.h>
 #include <Storages/MergeTree/MergeTreeIndexGranularityInfo.h>
 #include <Storages/MergeTree/MergeTreeIndicesSerialization.h>
 #include <Storages/MergeTree/VectorSimilarityIndexCache.h>
@@ -211,7 +212,12 @@ void MergeTreeIndexReader::read(size_t mark, const IMergeTreeIndexCondition * co
                                           index->getFileName(),
                                           mark};
 
-        granule = vector_similarity_index_cache->getOrSet(key, load_func);
+        granule = vector_similarity_index_cache->getOrSet(
+            key,
+            concrete_part->storage.getStorageID().uuid,
+            concrete_part->name,
+            index->index.name,
+            load_func);
     }
     else
     {

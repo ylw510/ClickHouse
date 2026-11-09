@@ -1,3 +1,4 @@
+#include <atomic>
 #include <DataTypes/DataTypeString.h>
 #include <Disks/DiskType.h>
 #include <Disks/DiskObjectStorage/DiskObjectStorage.h>
@@ -9,8 +10,8 @@
 #include <Storages/StorageProxy.h>
 #include <Storages/SubcolumnCodecs.h>
 #include <Storages/MergeTree/MergeTreeData.h>
-#include <Storages/MergeTree/LoadedMergeTreeDataPartInfoForReader.h>
 #include <Storages/MergeTree/MergeTreeIndexReader.h>
+#include <Storages/MergeTree/MergeTreeIOSettings.h>
 #include <Storages/MergeTree/VectorSimilarityIndexCache.h>
 #include <Storages/PartitionCommands.h>
 #include <Common/CurrentThread.h>
@@ -4699,7 +4700,7 @@ void MergeTreeData::dropVectorSimilarityIndexCache(
     VectorSimilarityIndexCache & cache,
     const std::optional<String> & index_file_name) const
 {
-    auto data_parts = getDataPartsVectorForInternalUsage();
+    auto data_parts = getDataPartsVectorForInternalUsage({DataPartState::Active, DataPartState::Outdated});
     for (const auto & part : data_parts)
     {
         const String path = part->getDataPartStorage().getDiskName() + ":" + part->getRelativePathOfActivePart();
@@ -4751,29 +4752,85 @@ void MergeTreeData::prewarmVectorSimilarityIndexCache(
     });
 
     const double ratio_to_prewarm = getContext()->getServerSettings()[ServerSetting::vector_similarity_index_cache_prewarm_ratio];
-    auto enough_space = [&cache, ratio_to_prewarm]()
+
+    /// One HNSW granule can be tens of megabytes. Several tasks can pass a size-only check before any
+    /// of them inserts, so count in-flight estimates towards the ratio and skip a granule that would
+    /// not fit. The reservation is taken on this thread before enqueueing, so concurrent workers
+    /// cannot oversubscribe the budget.
+    struct PrewarmBudget
     {
-        return static_cast<double>(cache.sizeInBytes()) < static_cast<double>(cache.maxSizeInBytes()) * ratio_to_prewarm;
+        VectorSimilarityIndexCache & cache;
+        double ratio;
+        std::atomic<size_t> in_flight{0};
+
+        size_t limit() const
+        {
+            return static_cast<size_t>(static_cast<double>(cache.maxSizeInBytes()) * ratio);
+        }
+
+        bool wouldFit(size_t extra) const
+        {
+            return cache.sizeInBytes() + in_flight.load(std::memory_order_relaxed) + extra < limit();
+        }
+
+        bool tryReserve(size_t bytes)
+        {
+            size_t prev = in_flight.load(std::memory_order_relaxed);
+            while (true)
+            {
+                if (cache.sizeInBytes() + prev + bytes >= limit())
+                    return false;
+                if (in_flight.compare_exchange_weak(prev, prev + bytes, std::memory_order_relaxed))
+                    return true;
+            }
+        }
+
+        void release(size_t bytes)
+        {
+            in_flight.fetch_sub(bytes, std::memory_order_relaxed);
+        }
+    };
+
+    PrewarmBudget budget{cache, ratio_to_prewarm};
+
+    auto estimate_index_bytes = [](const MergeTreeDataPartPtr & part, const MergeTreeIndexPtr & index)
+    {
+        size_t bytes = VectorSimilarityIndexCacheCell::ENTRY_OVERHEAD_BYTES_GUESS;
+        for (const auto & substream : index->getSubstreams())
+            bytes += part->getFileSizeOrZeroResolved(index->getFileName() + substream.suffix, substream.extension);
+        return bytes;
     };
 
     auto mark_cache = getContext()->getIndexMarkCache();
     auto uncompressed_cache = getContext()->getIndexUncompressedCache();
+    const auto context = getContext();
 
     ThreadPoolCallbackRunnerLocal<void> runner(pool, ThreadName::MERGETREE_PREWARM_CACHE);
 
     for (const auto & part : data_parts)
     {
-        if (!enough_space())
+        if (!budget.wouldFit(0))
             break;
 
         for (const auto & index : indexes)
         {
+            const size_t estimate = estimate_index_bytes(part, index);
+            if (!budget.tryReserve(estimate))
+                continue;
+
             runner.enqueueAndKeepTrack(
-                [part, index, &cache, mark_cache, uncompressed_cache, enough_space, current_component = Coordination::getCurrentComponent()]
+                [part,
+                 index,
+                 estimate,
+                 &cache,
+                 &budget,
+                 mark_cache,
+                 uncompressed_cache,
+                 context,
+                 current_component = Coordination::getCurrentComponent()]
                 {
                     auto component_guard = Coordination::setCurrentComponent(current_component);
-                    if (!enough_space())
-                        return;
+                    SCOPE_EXIT({ budget.release(estimate); });
 
                     auto alter_conversions = std::make_shared<AlterConversions>();
                     auto part_info = std::make_shared<LoadedMergeTreeDataPartInfoForReader>(part, alter_conversions);
@@ -4787,7 +4844,7 @@ void MergeTreeData::prewarmVectorSimilarityIndexCache(
                         return;
 
                     MarkRanges ranges{MarkRange(0, skip_marks)};
-                    MergeTreeReaderSettings reader_settings;
+                    auto reader_settings = MergeTreeReaderSettings::createFromContext(context);
                     MergeTreeIndexReader reader(
                         index,
                         part_info,
@@ -4801,7 +4858,7 @@ void MergeTreeData::prewarmVectorSimilarityIndexCache(
 
                     for (size_t mark = 0; mark < skip_marks; ++mark)
                     {
-                        if (!enough_space())
+                        if (cache.sizeInBytes() >= budget.limit())
                             return;
                         MergeTreeIndexGranulePtr granule;
                         reader.read(mark, /*condition=*/ nullptr, granule, /*readable_ranges=*/ nullptr);

@@ -2,10 +2,11 @@ after insert	0
 after prewarm t1	1
 after prewarm t1 and t2	1
 after drop t1	1
+after drop t1 leftover	0
 after drop t2	0
-two indexes	['skp_idx_idx_a','skp_idx_idx_b']
-after drop idx_a	['skp_idx_idx_b']
-after prewarm idx_a	['skp_idx_idx_a','skp_idx_idx_b']
+two indexes	['idx_a','idx_b']
+after drop idx_a	['idx_b']
+after prewarm idx_a	['idx_a','idx_b']
 prewarm keys before ann	1
 1
 prewarm keys after ann	1

@@ -1,5 +1,6 @@
--- Tags: no-parallel, no-fasttest, no-ordinary-database
--- no-parallel: inspects the server-wide vector similarity index cache
+-- Tags: no-fasttest, no-ordinary-database
+-- Vector similarity indexes need usearch. Filter the server-wide cache by this
+-- test's database and table so it can run in parallel with other tests.
 
 SET parallel_replicas_local_plan = 1;
 
@@ -8,8 +9,6 @@ DROP TABLE IF EXISTS vs_cache_t2;
 DROP TABLE IF EXISTS vs_cache_two_idx;
 DROP TABLE IF EXISTS vs_cache_memory;
 DROP TABLE IF EXISTS vs_cache_plain;
-
-SYSTEM DROP VECTOR SIMILARITY INDEX CACHE;
 
 CREATE TABLE vs_cache_t1
 (
@@ -34,19 +33,20 @@ SETTINGS index_granularity = 8192;
 INSERT INTO vs_cache_t1 VALUES (0, [1.0, 0.0]), (1, [1.1, 0.0]), (2, [0.0, 2.0]), (3, [0.0, 2.1]);
 INSERT INTO vs_cache_t2 VALUES (0, [1.0, 0.0]), (1, [1.1, 0.0]), (2, [0.0, 2.0]), (3, [0.0, 2.1]);
 
-SELECT 'after insert', count() FROM system.vector_similarity_index_cache;
+SELECT 'after insert', count() FROM system.vector_similarity_index_cache WHERE database = currentDatabase() AND table IN ('vs_cache_t1', 'vs_cache_t2');
 
 SYSTEM PREWARM VECTOR SIMILARITY INDEX CACHE FOR TABLE vs_cache_t1;
-SELECT 'after prewarm t1', count() > 0 FROM system.vector_similarity_index_cache;
+SELECT 'after prewarm t1', count() > 0 FROM system.vector_similarity_index_cache WHERE database = currentDatabase() AND table = 'vs_cache_t1';
 
 SYSTEM PREWARM VECTOR SIMILARITY INDEX CACHE FOR TABLE vs_cache_t2;
-SELECT 'after prewarm t1 and t2', count() > 1 FROM system.vector_similarity_index_cache;
+SELECT 'after prewarm t1 and t2', count() > 1 FROM system.vector_similarity_index_cache WHERE database = currentDatabase() AND table IN ('vs_cache_t1', 'vs_cache_t2');
 
 SYSTEM DROP VECTOR SIMILARITY INDEX CACHE FOR TABLE vs_cache_t1;
-SELECT 'after drop t1', count() > 0 FROM system.vector_similarity_index_cache;
+SELECT 'after drop t1', count() > 0 FROM system.vector_similarity_index_cache WHERE database = currentDatabase() AND table = 'vs_cache_t2';
+SELECT 'after drop t1 leftover', count() FROM system.vector_similarity_index_cache WHERE database = currentDatabase() AND table = 'vs_cache_t1';
 
 SYSTEM DROP VECTOR SIMILARITY INDEX CACHE FOR TABLE vs_cache_t2;
-SELECT 'after drop t2', count() FROM system.vector_similarity_index_cache;
+SELECT 'after drop t2', count() FROM system.vector_similarity_index_cache WHERE database = currentDatabase() AND table IN ('vs_cache_t1', 'vs_cache_t2');
 
 CREATE TABLE vs_cache_two_idx
 (
@@ -63,17 +63,17 @@ SETTINGS index_granularity = 8192;
 INSERT INTO vs_cache_two_idx VALUES (0, [1.0, 0.0], [0.0, 1.0]), (1, [1.1, 0.0], [0.0, 1.1]);
 
 SYSTEM PREWARM VECTOR SIMILARITY INDEX CACHE FOR TABLE vs_cache_two_idx;
-SELECT 'two indexes', arraySort(groupUniqArray(index_name)) FROM system.vector_similarity_index_cache;
+SELECT 'two indexes', arraySort(groupUniqArray(index_name)) FROM system.vector_similarity_index_cache WHERE database = currentDatabase() AND table = 'vs_cache_two_idx';
 
 SYSTEM DROP VECTOR SIMILARITY INDEX CACHE FOR TABLE vs_cache_two_idx INDEX idx_a;
-SELECT 'after drop idx_a', arraySort(groupUniqArray(index_name)) FROM system.vector_similarity_index_cache;
+SELECT 'after drop idx_a', arraySort(groupUniqArray(index_name)) FROM system.vector_similarity_index_cache WHERE database = currentDatabase() AND table = 'vs_cache_two_idx';
 
 SYSTEM PREWARM VECTOR SIMILARITY INDEX CACHE FOR TABLE vs_cache_two_idx INDEX idx_a;
-SELECT 'after prewarm idx_a', arraySort(groupUniqArray(index_name)) FROM system.vector_similarity_index_cache;
+SELECT 'after prewarm idx_a', arraySort(groupUniqArray(index_name)) FROM system.vector_similarity_index_cache WHERE database = currentDatabase() AND table = 'vs_cache_two_idx';
 
-SYSTEM DROP VECTOR SIMILARITY INDEX CACHE;
+SYSTEM DROP VECTOR SIMILARITY INDEX CACHE FOR TABLE vs_cache_two_idx;
 SYSTEM PREWARM VECTOR SIMILARITY INDEX CACHE FOR TABLE vs_cache_t1;
-SELECT 'prewarm keys before ann', count() AS cached FROM system.vector_similarity_index_cache;
+SELECT 'prewarm keys before ann', count() AS cached FROM system.vector_similarity_index_cache WHERE database = currentDatabase() AND table = 'vs_cache_t1';
 
 SELECT count()
 FROM
@@ -85,7 +85,7 @@ FROM
     LIMIT 1
 );
 
-SELECT 'prewarm keys after ann', count() FROM system.vector_similarity_index_cache;
+SELECT 'prewarm keys after ann', count() FROM system.vector_similarity_index_cache WHERE database = currentDatabase() AND table = 'vs_cache_t1';
 
 CREATE TABLE vs_cache_memory (id Int32, vec Array(Float32)) ENGINE = Memory;
 CREATE TABLE vs_cache_plain (id Int32) ENGINE = MergeTree ORDER BY id;

@@ -3427,18 +3427,23 @@ LIMIT 10
 .description
 Shows the content of the vector similarity index cache: one row per deserialized HNSW granule. Use [`SYSTEM DROP VECTOR SIMILARITY INDEX CACHE`](/reference/statements/system#drop-vector-similarity-index-cache) and [`SYSTEM PREWARM VECTOR SIMILARITY INDEX CACHE`](/reference/statements/system#prewarm-vector-similarity-index-cache) to evict or load entries.
 
+The rows are filtered by access rights: an entry is visible only to a user who holds `SHOW TABLES` and `SHOW COLUMNS` on its table. Entries of a table that no longer exists are visible only to a user holding those privileges globally.
+
 .columns
+- `database` ([String](/sql-reference/data-types/string)) — Database of the table the cached granule belongs to.
+- `table` ([String](/sql-reference/data-types/string)) — Table the cached granule belongs to.
+- `table_uuid` ([UUID](/sql-reference/data-types/uuid)) — UUID of the table. Stable across renames.
 - `disk_name` ([String](/sql-reference/data-types/string)) — Disk of the cached data part.
-- `data_path` ([String](/sql-reference/data-types/string)) — Relative path of the cached data part.
-- `index_name` ([String](/sql-reference/data-types/string)) — Skip-index file name of the cached granule (`skp_idx_<name>`).
+- `part_name` ([String](/sql-reference/data-types/string)) — Name of the cached data part.
+- `index_name` ([String](/sql-reference/data-types/string)) — DDL name of the vector similarity index.
 - `index_mark` ([UInt64](/sql-reference/data-types/int-uint)) — Mark of the cached vector similarity index granule.
 - `size` ([UInt64](/sql-reference/data-types/int-uint)) — Accounted size of the cache entry in bytes.
 
 .examples
 ```sql
-SELECT index_name, count(), sum(size)
+SELECT database, table, index_name, count(), sum(size)
 FROM system.vector_similarity_index_cache
-GROUP BY index_name;
+GROUP BY database, table, index_name;
 ```
 
 .see_also

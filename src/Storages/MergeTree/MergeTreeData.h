@@ -793,8 +793,9 @@ public:
         VectorSimilarityIndexCache & cache,
         const std::optional<String> & index_name);
 
-    /// Drop cache entries of this table's active parts. `index_file_name` is `IMergeTreeIndex::getFileName()`
-    /// (not the DDL name); unset means every vector similarity index of the table.
+    /// Drop cache entries of this table's Active and Outdated parts. `index_file_name` is
+    /// `IMergeTreeIndex::getFileName()` (not the DDL name); unset means every vector similarity
+    /// index of the table.
     void dropVectorSimilarityIndexCache(
         VectorSimilarityIndexCache & cache,
         const std::optional<String> & index_file_name) const;
