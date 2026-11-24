@@ -4,7 +4,7 @@
 
 ## 查询路由
 
-分钟行能回答的，是窗口里可以合并的汇总：`max`、`min`、`sum`、`count`、`avg`（`sum / count`）、`present_over_time` 与 `absent_over_time`（`count` 是否大于 0）、`quantile_over_time`（t-digest）、`stddev_over_time` 与 `stdvar_over_time`（`{count, mean, m2}`）。这些函数在 rollup 开启时读分钟表，窗口不对齐或步长小于 1 分钟也读这张表。
+分钟行能回答的，是窗口里可以合并的汇总：`max`、`min`、`sum`、`count`、`avg`（`sum / count`）、`present_over_time` 与 `absent_over_time`（`count` 是否大于 0）、`quantile_over_time`（t-digest）、`stddev_over_time` 与 `stdvar_over_time`（`{count, mean, m2}`）。这些函数在 rollup 开启、并且参数是直接存在表里的 range selector 时读分钟表。子查询或表达式算出来的 range vector 没有分钟行，仍读 `samples`。窗口不对齐或步长小于 1 分钟也读分钟表；边界分钟整行计入，所以这时的结果和逐点计算不完全相同。
 
 下面这些函数要的量不在分钟行里，任何窗口和步长都读 `samples`（时间范围落在 TTL 内时仍可走 `recent samples`），走现有的 ToGrid：
 
@@ -44,9 +44,9 @@
 | `quantile` | `AggregateFunction(quantileTDigest, Float64)` |
 | `variance` | `AggregateFunction(timeSeriesVariance, Float64)` |
 
-`timeSeriesMax` 和 `timeSeriesMin` 的状态仍是 `Float64`，比较规则与 `timeSeriesMaxToGrid` / `timeSeriesMinToGrid` 相同：NaN 输给任何实数。裸的 `SimpleAggregateFunction(max, Float64)` 对 NaN 的比较与这条规则不同，所以不用它。
+`timeSeriesMax`、`timeSeriesMin` 和 `timeSeriesVariance` 都是要新加的聚合函数。前两个的状态是 `Float64`，还要写进 `SimpleAggregateFunction` 的允许列表，现有列表里没有它们。比较规则与 `timeSeriesMaxToGrid` / `timeSeriesMinToGrid` 相同：NaN 输给任何实数。裸的 `SimpleAggregateFunction(max, Float64)` 对 NaN 的比较与这条规则不同，所以不用它。`timeSeriesVariance` 的状态是 `{count, mean, m2}`，不是 `Float64`。
 
-`quantile` 存的是可合并状态，不存算好的 `Float64`。十五个分钟上的分位数再取分位数，并不是这十五分钟原始点的分位数。查询使用 `quantileTDigestMerge`。t-digest 是近似值，和 PromQL `quantile_over_time` 的精确分位数不同；按上一节的路由，`quantile_over_time` 不是 `rate` / `deriv`，所以读这一列。不能合并的分位数没有单独的精确状态列，`quantileExact` 会把原始点再存一遍，失去少读的意义，因此不建这一列。
+`quantile` 存的是可合并状态，不存算好的 `Float64`。十五个分钟上的分位数再取分位数，并不是这十五分钟原始点的分位数。状态里不写入 PromQL 的 `φ`：`φ` 在查询时由 `quantileTDigestMerge(φ)` 指定，同一份 t-digest 可以取不同分位。t-digest 是近似值，和 PromQL `quantile_over_time` 的精确分位数不同。不能合并的分位数没有单独的精确状态列，`quantileExact` 会把原始点再存一遍，失去少读的意义，因此不建这一列。
 
 `sum` 是普通 `Float64` 求和。`timeSeriesSumToGrid` 使用 Kahan 补偿，先按分钟相加再相加窗口，低位会和逐点补偿和差几个 ulp。`max`、`min`、`count` 可以逐位相等；`sum` 和 `avg` 的测试用相对误差。
 
@@ -58,7 +58,7 @@
 
 `stddev_over_time` 和 `stdvar_over_time` 也可以走分钟表，但 `sum` 和 `count` 不够，算好的标准差也不能存。`timeSeriesStddevToGrid` 用的是 Welford/Chan 的总体矩：状态是 `{count, mean, m2}`，`m2` 是对各自均值的平方差之和。两段这样的状态可以用 Chan 公式合并，合并满足结合律，和 `Summary::merge` 相同。`variance` 列就存这个状态。查询时把窗口里相交分钟的状态合并，`stdvar_over_time` 是 `m2 / count`，`stddev_over_time` 再开平方。不用 `sumsq / count - (sum / count)^2`，那个公式在数值接近时会抵消，现有 ToGrid 也避开了它。`variance` 里的 `count` 和 `count` 列是同一批去重、去掉 stale marker 之后的点。
 
-`mad_over_time`、`first_over_time`、`last_over_time` 和 `rate` 都不是一个可合并的 `Float64`。
+`mad_over_time`、`first_over_time`、`last_over_time` 和 `rate` 读 `samples`，原因见上面的查询路由。
 
 ## bucket
 
@@ -85,7 +85,7 @@ PromQL 和 `AggregateFunctionTimeseriesBase` 的窗口都是 `(t - window, t]`�
 
 `samples` 块、`recent samples` 块、`tags`、`time ranges` 的构造不变。rollup 只增加一条与 `recent_samples_pipeline` 并列的 pipeline。
 
-同一分钟跨多个 insert 时，由 `AggregatingMergeTree` 按 `(id, bucket)` 合并。`max` / `min` 对重复写入幂等。`samples` 在合并 `timeSeriesGroupArray` 时会按时间戳再去重；rollup 的 `sum`、`count`、`quantile` 已经把点压扁，同一次时间戳若出现在两个 insert 里（例如 remote write 重试），会算两次。这是这三列与 `samples` 的差别。
+同一分钟跨多个 insert 时，由 `AggregatingMergeTree` 按 `(id, bucket)` 合并。`max` / `min` 对重复写入幂等。`samples` 在合并 `timeSeriesGroupArray` 时会按时间戳再去重；rollup 的 `sum`、`count`、`quantile`、`variance` 已经把点压扁，同一次时间戳若出现在两个 insert 里（例如 remote write 重试），会算两次。这四列和 `samples` 在重试重叠时不一致。
 
 ## 查询
 
@@ -123,7 +123,8 @@ GROUP BY group
 | `sum_over_time` | 分钟 rollup | 相交分钟的 `sum` 相加 |
 | `avg_over_time` | 分钟 rollup | 相交分钟的 `sum` 之和 / `count` 之和 |
 | `count_over_time` | 分钟 rollup | 相交分钟的 `count` 相加 |
-| `present_over_time`、`absent_over_time` | 分钟 rollup | 相交分钟的 `count` 之和大于 0 则存在；`absent_over_time` 取相反结果 |
+| `present_over_time` | 分钟 rollup | 相交分钟的 `count` 之和大于 0 则为 1，否则该步没有这个序列 |
+| `absent_over_time` | 分钟 rollup | 用同一份 `count` 判断窗口里有没有点。没有任何序列存在时返回一条值为 1 的合成序列；有任一序列存在时结果为空。不是逐条序列对 `present_over_time` 取反 |
 | `quantile_over_time` | 分钟 rollup | 相交分钟的 t-digest 状态 `-Merge` |
 | `stddev_over_time` | 分钟 rollup | 相交分钟的 `{count, mean, m2}` 做 Chan 合并，再取 `sqrt(m2 / count)` |
 | `stdvar_over_time` | 分钟 rollup | 同上，结果是 `m2 / count` |
