@@ -6,6 +6,7 @@
 #include <Parsers/ASTLiteral.h>
 #include <Parsers/Prometheus/stepsInTimeSeriesRange.h>
 #include <Storages/TimeSeries/PrometheusQueryToSQL/ConverterContext.h>
+#include <Storages/TimeSeries/PrometheusQueryToSQL/applyFunctionOverRange.h>
 #include <Storages/TimeSeries/PrometheusQueryToSQL/NodeEvaluationRange.h>
 #include <Storages/TimeSeries/PrometheusQueryToSQL/SelectQueryBuilder.h>
 #include <Storages/TimeSeries/PrometheusQueryToSQL/fixedAtModifier.h>
@@ -148,6 +149,9 @@ SQLQueryPiece applyFunctionQuantileOverTime(
     if (range_argument.store_method == StoreMethod::EMPTY)
         return SQLQueryPiece{function_node, ResultType::INSTANT_VECTOR, StoreMethod::EMPTY}; /// The range vector is empty, so is the result.
 
+    /// A literal phi can be a parameter of the minute-rollup aggregate. A per-step phi stays on raw samples.
+    const bool phi_is_literal = arguments[0].store_method == StoreMethod::CONST_SCALAR;
+
     /// The level goes last: it may register a scalar subquery, which is left unused if the result is found empty above.
     QuantileLevel quantile_level = getQuantileLevel(arguments[0], context);
     if (!quantile_level.ast)
@@ -169,6 +173,13 @@ SQLQueryPiece applyFunctionQuantileOverTime(
                         function_name, getPromQLText(range_argument, context));
     }
     const auto aggregation_range = getRangeAggregationRange(range_argument, node_range, context);
+
+    if (phi_is_literal)
+    {
+        if (auto rolled = tryApplyMinuteRollup(
+                function_node, function_name, range_argument, context, aggregation_range, window, quantile_level.ast, /* drop_metric_name = */ true))
+            return std::move(*rolled);
+    }
 
     /// A range vector made from a scalar has no `group` column. The result is still a vector grid with one series without
     /// tags, because the aggregate function returns NULL for a window without enough samples and only VECTOR_GRID can hold NULL.

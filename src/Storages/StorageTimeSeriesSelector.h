@@ -43,6 +43,7 @@ public:
         {
             Samples,
             TimestampAndValue,
+            MinuteRollups,
         };
         ReturnColumns return_columns = ReturnColumns::Samples;
     };

@@ -55,6 +55,9 @@ struct TimeSeriesSettings
     /// Whether the table has the "recent samples" target.
     [[nodiscard]] bool isRecentSamplesTargetEnabled() const;
 
+    /// Whether the table has the minute rollup target (`store_minute_rollups`, version 12 or later).
+    [[nodiscard]] bool isMinuteRollupsTargetEnabled() const;
+
     /// Whether the table has the "time ranges" target.
     [[nodiscard]] bool isTimeRangesTargetEnabled() const;
 

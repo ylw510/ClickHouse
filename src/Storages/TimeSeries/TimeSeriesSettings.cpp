@@ -49,6 +49,7 @@ namespace ErrorCodes
       * while an obsolete setting is accepted and ignored whatever the version of the table is. */ \
     DECLARE(DataType, id_type, String{}, "The type of the 'id' column of the target tables. Applies to tables of version 9 or earlier only, the later versions declare the type in the INNER COLUMNS clause of the 'tags' table. The setting is set automatically when such a table is created if the type isn't kept in the definition otherwise: if the 'tags' target is an external table, or if the 'id_generator' setting is set. Requires 'version' to be at least 2", 0) \
     DECLARE(ASTFunction, id_generator, String{}, "Expression that computes the identifier (fingerprint) of a time series from its tags. Applies to tables of version 9 or earlier only, the later versions declare the expression as the DEFAULT expression of the 'id' column in the INNER COLUMNS clause of the 'tags' table. If the 'tags' target is an external table and 'version' is at least 2, the setting is set automatically when the table is created: to the DEFAULT expression of the 'id' column of that table if any, otherwise to the expression chosen automatically for the 'id' type", 0) \
+    DECLARE(Bool, store_minute_rollups, false, "If set to true then the table also writes a minute rollup inner table: one aggregating row per time series per minute (max, min, sum, count, a t-digest and a variance state). 'samples' is unchanged. PromQL functions that can be merged from those states read the rollup when the query setting 'time_series_use_minute_rollups' is enabled. Requires 'version' to be at least 12. The value is pinned into the table definition at CREATE time", 0) \
     DECLARE(Bool, store_min_time_and_max_time, true, "If set to true then the table will store 'min_time' and 'max_time' for each time series in the 'tags' table. Applies to tables of version 7 or earlier only, the later versions use the 'store_time_ranges' setting instead", 0) \
     DECLARE(Bool, aggregate_min_time_and_max_time, true, "When creating an inner target 'tags' table, this flag enables using 'SimpleAggregateFunction(min, Nullable(DateTime64(3)))' instead of just 'Nullable(DateTime64(3))' as the type of the 'min_time' column, and the same for the 'max_time' column. Applies to tables of version 7 or earlier only", 0) \
     DECLARE(Bool, filter_by_min_time_and_max_time, true, "If set to true then the table will use the 'min_time' and 'max_time' columns of the 'tags' table for filtering time series. Applies to tables of version 7 or earlier only", 0) \
@@ -64,6 +65,7 @@ TimeSeriesSettings::TimeSeriesSettings() : impl(std::make_unique<TimeSeriesSetti
     /// The settings read from a CREATE query without this class must use the same defaults (see CreateQueryTimeSeriesSettings.h).
     chassert((*this)[TimeSeriesSetting::recent_samples_ttl_seconds].value == detail::TIME_SERIES_RECENT_SAMPLES_TTL_SECONDS_DEFAULT);
     chassert((*this)[TimeSeriesSetting::store_time_ranges].value == detail::TIME_SERIES_STORE_TIME_RANGES_DEFAULT);
+    chassert((*this)[TimeSeriesSetting::store_minute_rollups].value == detail::TIME_SERIES_STORE_MINUTE_ROLLUPS_DEFAULT);
 }
 
 TimeSeriesSettings::TimeSeriesSettings(const TimeSeriesSettings & settings) : impl(std::make_unique<TimeSeriesSettingsImpl>(*settings.impl))
@@ -138,6 +140,12 @@ bool TimeSeriesSettings::isRecentSamplesTargetEnabled() const
     return (*this)[TimeSeriesSetting::recent_samples_ttl_seconds] != 0;
 }
 
+bool TimeSeriesSettings::isMinuteRollupsTargetEnabled() const
+{
+    return ((*this)[TimeSeriesSetting::version] >= TimeSeriesVersion::MIN_WITH_MINUTE_ROLLUPS)
+        && (*this)[TimeSeriesSetting::store_minute_rollups];
+}
+
 bool TimeSeriesSettings::isTimeRangesTargetEnabled() const
 {
     return ((*this)[TimeSeriesSetting::version] >= TimeSeriesVersion::MIN_WITH_TIME_RANGES_TARGET)
@@ -189,6 +197,7 @@ void checkTimeSeriesSettings(const TimeSeriesSettings & settings)
     check_setting_requires_version("samples_index_granularity_bytes", TimeSeriesVersion::MIN_WITH_BUCKETED_SAMPLES);
     check_setting_requires_version("recent_samples_bucket_step_seconds", TimeSeriesVersion::MIN_WITH_BUCKETED_SAMPLES);
     check_setting_requires_version("recent_samples_index_granularity_bytes", TimeSeriesVersion::MIN_WITH_BUCKETED_SAMPLES);
+    check_setting_requires_version("store_minute_rollups", TimeSeriesVersion::MIN_WITH_MINUTE_ROLLUPS);
 
     auto check_bucket_step = [](const SettingFieldUInt64 & bucket_step, std::string_view setting_name)
     {

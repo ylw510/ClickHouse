@@ -1,5 +1,7 @@
 #include <Storages/StorageTimeSeriesSelector.h>
 
+#include <limits>
+
 #include <Common/DateLUTImpl.h>
 #include <Common/Exception.h>
 #include <Common/logger_useful.h>
@@ -49,6 +51,7 @@
 #include <base/insertAtEnd.h>
 
 #include <algorithm>
+#include <limits>
 #include <limits>
 
 
@@ -133,8 +136,10 @@ StorageTimeSeriesSelector::Configuration::ReturnColumns parseReturnColumns(std::
         return StorageTimeSeriesSelector::Configuration::ReturnColumns::Samples;
     if (str == "timestamp_and_value")
         return StorageTimeSeriesSelector::Configuration::ReturnColumns::TimestampAndValue;
+    if (str == "minute_rollups")
+        return StorageTimeSeriesSelector::Configuration::ReturnColumns::MinuteRollups;
     throw Exception(ErrorCodes::BAD_ARGUMENTS,
-        "Table function '{}' requires the argument 'return_columns' to be 'samples' or 'timestamp_and_value', got {}",
+        "Table function '{}' requires the argument 'return_columns' to be 'samples', 'timestamp_and_value' or 'minute_rollups', got {}",
         function_name, quoteString(str));
 }
 
@@ -969,6 +974,76 @@ namespace
         return wrapIntoSelectWithUnionQuery(std::move(select_query));
     }
 
+    /// Minute `(bucket, bucket + 60s]` in the scale of the timestamp type.
+    Int64 minuteRollupBucket(Int64 timestamp, Int64 minute_step)
+    {
+        if (timestamp == std::numeric_limits<Int64>::min())
+            return timestamp;
+        return DateLUTImpl::roundDownToMultiple(timestamp - 1, minute_step);
+    }
+
+    /// SELECT id, bucket, max, min, sum, count, quantile, variance
+    /// FROM minute_rollups
+    /// WHERE bucket >= <first minute> AND bucket <= <last minute> AND id IN <tags>
+    ASTPtr makeSelectQueryFromMinuteRollups(
+        const StorageID & rollup_table_id,
+        ASTPtr select_query_from_tags_table,
+        const TableTimeRange & time_range,
+        const DataTypePtr & table_timestamp_type)
+    {
+        const UInt32 scale = tryGetDecimalScale(*table_timestamp_type).value_or(0);
+        const Int64 minute_step = 60 * DecimalUtils::scaleMultiplier<Int64>(scale);
+        const DateTime64 min_ts = time_range.min_time.value_or(DateTime64{std::numeric_limits<Int64>::min()});
+        const DateTime64 max_ts = time_range.max_time.value_or(DateTime64{std::numeric_limits<Int64>::max()});
+        const Int64 min_bucket = minuteRollupBucket(min_ts.value, minute_step);
+        const Int64 max_bucket = minuteRollupBucket(max_ts.value, minute_step);
+
+        auto select_query = make_intrusive<ASTSelectQuery>();
+        auto select_list_exp = make_intrusive<ASTExpressionList>();
+        auto & select_list = select_list_exp->children;
+        select_list.push_back(make_intrusive<ASTIdentifier>(TimeSeriesColumnNames::ID));
+        select_list.push_back(make_intrusive<ASTIdentifier>(TimeSeriesColumnNames::Bucket));
+
+        auto cast_column = [&](const char * name, const char * type_name)
+        {
+            auto casted = makeASTFunction("_CAST", make_intrusive<ASTIdentifier>(name), make_intrusive<ASTLiteral>(type_name));
+            casted->setAlias(name);
+            select_list.push_back(std::move(casted));
+        };
+        cast_column(TimeSeriesColumnNames::Max, "Float64");
+        cast_column(TimeSeriesColumnNames::Min, "Float64");
+        cast_column(TimeSeriesColumnNames::Sum, "Float64");
+        cast_column(TimeSeriesColumnNames::Count, "UInt64");
+        select_list.push_back(make_intrusive<ASTIdentifier>(TimeSeriesColumnNames::Quantile));
+        select_list.push_back(make_intrusive<ASTIdentifier>(TimeSeriesColumnNames::Variance));
+        select_query->setExpression(ASTSelectQuery::Expression::SELECT, select_list_exp);
+
+        auto tables = make_intrusive<ASTTablesInSelectQuery>();
+        auto table = make_intrusive<ASTTablesInSelectQueryElement>();
+        auto table_exp = make_intrusive<ASTTableExpression>();
+        table_exp->database_and_table_name = make_intrusive<ASTTableIdentifier>(rollup_table_id);
+        table_exp->children.emplace_back(table_exp->database_and_table_name);
+        table->table_expression = table_exp;
+        tables->children.push_back(table);
+        select_query->setExpression(ASTSelectQuery::Expression::TABLES, tables);
+
+        ASTs conditions;
+        conditions.push_back(makeASTFunction(
+            "greaterOrEquals",
+            make_intrusive<ASTIdentifier>(TimeSeriesColumnNames::Bucket),
+            timeSeriesTimestampToAST(DateTime64{min_bucket}, table_timestamp_type)));
+        conditions.push_back(makeASTFunction(
+            "lessOrEquals",
+            make_intrusive<ASTIdentifier>(TimeSeriesColumnNames::Bucket),
+            timeSeriesTimestampToAST(DateTime64{max_bucket}, table_timestamp_type)));
+        conditions.push_back(makeASTFunction(
+            "in",
+            make_intrusive<ASTIdentifier>(TimeSeriesColumnNames::ID),
+            make_intrusive<ASTSubquery>(std::move(select_query_from_tags_table))));
+        select_query->setExpression(ASTSelectQuery::Expression::WHERE, makeASTForLogicalAnd(std::move(conditions)));
+        return wrapIntoSelectWithUnionQuery(std::move(select_query));
+    }
+
     /// Wraps the select query from the samples table into an outer SELECT which casts the columns to the data types
     /// expected by this storage. For a table with buckets of samples:
     ///
@@ -1449,7 +1524,22 @@ void StorageTimeSeriesSelector::readImpl(
                   quoteString(config.selector.toString()));
     }
 
-    ASTPtr select_query_from_samples_table = makeSelectQueryFromSamplesTable(
+    ASTPtr select_query_from_samples_table;
+    if (config.return_columns == Configuration::ReturnColumns::MinuteRollups)
+    {
+        if (!time_series_storage->hasTarget(ViewTarget::MinuteRollups))
+            throw Exception(ErrorCodes::BAD_ARGUMENTS,
+                "Table {} has no minute rollup table. Create it with `store_minute_rollups = 1`",
+                time_series_storage->getStorageID().getNameForLogs());
+
+        select_query_from_samples_table = makeSelectQueryFromMinuteRollups(
+            time_series_storage->getTargetTableID(ViewTarget::MinuteRollups, context),
+            select_query_from_tags_table,
+            time_range_to_filter_samples,
+            config.table_timestamp_type);
+    }
+    else
+        select_query_from_samples_table = makeSelectQueryFromSamplesTable(
         samples_table_id,
         select_query_from_tags_table,
         time_range_to_filter_samples,
@@ -1457,7 +1547,13 @@ void StorageTimeSeriesSelector::readImpl(
         bucket_step,
         std::move(whole_metric_id_range_condition));
 
-    ASTPtr select_query = makeSelectQuery(
+    ASTPtr select_query;
+    if (config.return_columns == Configuration::ReturnColumns::MinuteRollups)
+    {
+        select_query = std::move(select_query_from_samples_table);
+    }
+    else
+        select_query = makeSelectQuery(
         std::move(select_query_from_samples_table),
         time_range_to_filter_samples,
         config.table_id_type,
@@ -1465,8 +1561,9 @@ void StorageTimeSeriesSelector::readImpl(
         config.table_value_type,
         bucket_step);
 
-    select_query = convertToReturnColumns(
-        std::move(select_query), config.table_timestamp_type, config.table_value_type, bucket_step, config.return_columns);
+    if (config.return_columns != Configuration::ReturnColumns::MinuteRollups)
+        select_query = convertToReturnColumns(
+            std::move(select_query), config.table_timestamp_type, config.table_value_type, bucket_step, config.return_columns);
 
     LOG_DEBUG(log, "Building SQL for selector: {}", config.selector.toString());
     LOG_DEBUG(log, "Will execute query:\n{}", select_query->formatForLogging());

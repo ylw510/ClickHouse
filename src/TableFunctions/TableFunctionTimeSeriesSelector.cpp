@@ -1,7 +1,10 @@
 #include <TableFunctions/TableFunctionTimeSeriesSelector.h>
 
+#include <DataTypes/DataTypeAggregateFunction.h>
 #include <DataTypes/DataTypeArray.h>
+#include <DataTypes/DataTypeFactory.h>
 #include <DataTypes/DataTypeTuple.h>
+#include <DataTypes/DataTypesNumber.h>
 #include <Parsers/ASTFunction.h>
 #include <Storages/TimeSeries/TimeSeriesColumnNames.h>
 #include <TableFunctions/TableFunctionFactory.h>
@@ -29,6 +32,20 @@ void TableFunctionTimeSeriesSelector::parseArguments(const ASTPtr & ast_function
 
 ColumnsDescription TableFunctionTimeSeriesSelector::getActualTableStructure(ContextPtr /* context */, bool /* is_insert_query */) const
 {
+    if (config.return_columns == StorageTimeSeriesSelector::Configuration::ReturnColumns::MinuteRollups)
+    {
+        return ColumnsDescription({
+            {TimeSeriesColumnNames::ID, config.table_id_type},
+            {TimeSeriesColumnNames::Bucket, config.table_timestamp_type},
+            {TimeSeriesColumnNames::Max, std::make_shared<DataTypeFloat64>()},
+            {TimeSeriesColumnNames::Min, std::make_shared<DataTypeFloat64>()},
+            {TimeSeriesColumnNames::Sum, std::make_shared<DataTypeFloat64>()},
+            {TimeSeriesColumnNames::Count, std::make_shared<DataTypeUInt64>()},
+            {TimeSeriesColumnNames::Quantile, DataTypeFactory::instance().get("AggregateFunction(quantileTDigest, Float64)")},
+            {TimeSeriesColumnNames::Variance, DataTypeFactory::instance().get("AggregateFunction(timeSeriesVariance, Float64)")},
+        });
+    }
+
     if (config.return_columns == StorageTimeSeriesSelector::Configuration::ReturnColumns::Samples)
     {
         /// The column `samples`: an array of samples per row.

@@ -12,6 +12,8 @@
 #include <Storages/TimeSeries/PrometheusQueryToSQL/getToGridAggregateFunctionArguments.h>
 #include <Storages/TimeSeries/PrometheusQueryToSQL/fixedAtModifier.h>
 #include <Storages/TimeSeries/timeSeriesTypesToAST.h>
+#include <Storages/TimeSeries/TimeSeriesColumnNames.h>
+#include <Parsers/Prometheus/PrometheusQueryTree.h>
 
 
 namespace DB::ErrorCodes
@@ -223,6 +225,111 @@ namespace
 }
 
 
+struct MinuteRollupFunction
+{
+    std::string_view ch_name;
+    std::string_view first_column;
+    std::string_view second_column;
+};
+
+const MinuteRollupFunction * findMinuteRollupFunction(std::string_view function_name)
+{
+    static const std::unordered_map<std::string_view, MinuteRollupFunction> functions = {
+        {"max_over_time", {"timeSeriesRollupMaxToGrid", TimeSeriesColumnNames::Max, {}}},
+        {"min_over_time", {"timeSeriesRollupMinToGrid", TimeSeriesColumnNames::Min, {}}},
+        {"sum_over_time", {"timeSeriesRollupSumToGrid", TimeSeriesColumnNames::Sum, {}}},
+        {"count_over_time", {"timeSeriesRollupCountToGrid", TimeSeriesColumnNames::Count, {}}},
+        {"avg_over_time", {"timeSeriesRollupAvgToGrid", TimeSeriesColumnNames::Sum, TimeSeriesColumnNames::Count}},
+        {"present_over_time", {"timeSeriesRollupPresentToGrid", TimeSeriesColumnNames::Count, {}}},
+        {"stddev_over_time", {"timeSeriesRollupStddevToGrid", TimeSeriesColumnNames::Variance, {}}},
+        {"stdvar_over_time", {"timeSeriesRollupStdvarToGrid", TimeSeriesColumnNames::Variance, {}}},
+        {"quantile_over_time", {"timeSeriesRollupQuantileToGrid", TimeSeriesColumnNames::Quantile, {}}},
+    };
+    auto it = functions.find(function_name);
+    if (it == functions.end())
+        return nullptr;
+    return &it->second;
+}
+
+const PrometheusQueryTree::RangeSelector * unwrapRangeSelector(const Node * node)
+{
+    while (node && node->node_type == PrometheusQueryTree::NodeType::Offset)
+        node = static_cast<const PrometheusQueryTree::Offset *>(node)->getExpression();
+    if (!node || node->node_type != PrometheusQueryTree::NodeType::RangeSelector)
+        return nullptr;
+    return static_cast<const PrometheusQueryTree::RangeSelector *>(node);
+}
+
+std::optional<SQLQueryPiece> tryApplyMinuteRollup(
+    const Node * node,
+    std::string_view function_name,
+    const SQLQueryPiece & range_argument,
+    ConverterContext & context,
+    const NodeEvaluationRange & aggregation_range,
+    Decimal64 window,
+    ASTPtr quantile_phi,
+    bool drop_metric_name)
+{
+    if (!context.use_minute_rollups)
+        return std::nullopt;
+    if (function_name == "quantile_over_time" && !quantile_phi)
+        return std::nullopt;
+
+    const MinuteRollupFunction * rollup = findMinuteRollupFunction(function_name);
+    if (!rollup)
+        return std::nullopt;
+
+    const auto * range_selector = unwrapRangeSelector(range_argument.node);
+    if (!range_selector || range_argument.store_method != StoreMethod::SAMPLES)
+        return std::nullopt;
+
+    const String selector_text = range_selector->getInstantSelector()->toString(*context.promql_tree);
+    const DateTime64 min_time = aggregation_range.start_time - window + 1;
+    const DateTime64 max_time = aggregation_range.end_time;
+
+    SelectQueryBuilder builder;
+    builder.select_list.push_back(makeASTFunction("timeSeriesIdToGroup", make_intrusive<ASTIdentifier>(TimeSeriesColumnNames::ID)));
+    builder.select_list.back()->setAlias(ColumnNames::Group);
+
+    auto aggregate = makeASTFunction(
+        String{rollup->ch_name},
+        make_intrusive<ASTIdentifier>(TimeSeriesColumnNames::Bucket),
+        make_intrusive<ASTIdentifier>(String{rollup->first_column}));
+    if (!rollup->second_column.empty())
+        aggregate->arguments->children.push_back(make_intrusive<ASTIdentifier>(String{rollup->second_column}));
+
+    auto start_ast = timeSeriesTimestampToAST(aggregation_range.start_time, context.result_timestamp_type);
+    auto end_ast = timeSeriesTimestampToAST(aggregation_range.end_time, context.result_timestamp_type);
+    auto step_ast = timeSeriesDurationToAST(aggregation_range.step, context.result_timestamp_type);
+    auto window_ast = timeSeriesDurationToAST(window, context.result_timestamp_type);
+    auto parameterized = quantile_phi
+        ? addParametersToAggregateFunction(std::move(aggregate), quantile_phi, start_ast, end_ast, step_ast, window_ast)
+        : addParametersToAggregateFunction(std::move(aggregate), start_ast, end_ast, step_ast, window_ast);
+
+    ASTPtr values = makeASTFunction("CAST", std::move(parameterized), make_intrusive<ASTLiteral>("Array(Nullable(Float64))"));
+    values->setAlias(ColumnNames::Values);
+    builder.select_list.push_back(std::move(values));
+    builder.group_by.push_back(make_intrusive<ASTIdentifier>(ColumnNames::Group));
+
+    builder.from_table_function = makeASTFunction(
+        "timeSeriesSelector",
+        make_intrusive<ASTLiteral>(context.time_series_storage_id.getDatabaseName()),
+        make_intrusive<ASTLiteral>(context.time_series_storage_id.getTableName()),
+        make_intrusive<ASTLiteral>(selector_text),
+        timeSeriesTimestampToAST(min_time, context.result_timestamp_type),
+        timeSeriesTimestampToAST(max_time, context.result_timestamp_type),
+        make_intrusive<ASTLiteral>("minute_rollups"));
+
+    SQLQueryPiece result{node, ResultType::INSTANT_VECTOR, StoreMethod::VECTOR_GRID};
+    result.select_query = builder.getSelectQuery();
+    result.start_time = aggregation_range.start_time;
+    result.end_time = aggregation_range.end_time;
+    result.step = aggregation_range.step;
+    if (drop_metric_name)
+        result = dropMetricName(std::move(result), context);
+    return result;
+}
+
 bool isFunctionOverRange(std::string_view function_name)
 {
     return getImplInfo(function_name) != nullptr;
@@ -266,6 +373,11 @@ SQLQueryPiece applyFunctionOverRange(
 
     const auto * fixed_at_node = getFixedAtModifier(argument);
     const auto aggregation_range = getRangeAggregationRange(argument, node_range, context);
+
+    if (auto rolled = tryApplyMinuteRollup(
+            node, function_name, argument, context, aggregation_range, window, nullptr,
+            drop_metric_name.value_or(impl_info->drop_metric_name)))
+        return std::move(*rolled);
 
     /// A range vector made from a scalar has no `group` column. The result is still a vector grid with one series without
     /// tags, because the aggregate function returns NULL for a window without enough samples and only VECTOR_GRID can hold NULL.

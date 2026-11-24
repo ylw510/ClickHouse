@@ -226,7 +226,7 @@ timeSeriesSelector('time_series_table', 'instant_query', min_time, max_time, ret
 - `instant_query` - An instant selector written in [PromQL syntax](https://prometheus.io/docs/prometheus/latest/querying/basics/#instant-vector-selectors), without `@` or `offset` modifiers.
 - `min_time` - Start timestamp, inclusive.
 - `max_time` - End timestamp, inclusive.
-- `return_columns` - The columns returning the samples: `'samples'` or `'timestamp_and_value'`, see below.
+- `return_columns` - The columns returning the samples: `'samples'`, `'timestamp_and_value'` or `'minute_rollups'`, see below.
 
 `min_time` and `max_time` can have fractions of a second even if the timestamps in the table are whole seconds:
 the function selects the samples with `min_time <= timestamp <= max_time` exactly, without rounding the bounds to the type of the timestamps.

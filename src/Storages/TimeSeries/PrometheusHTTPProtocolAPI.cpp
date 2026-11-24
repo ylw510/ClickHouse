@@ -7,6 +7,7 @@
 #include <Common/logger_useful.h>
 #include <Common/quoteString.h>
 #include <Core/DecimalFunctions.h>
+#include <Core/Settings.h>
 #include <Core/Field.h>
 #include <IO/WriteBufferFromString.h>
 #include <IO/WriteHelpers.h>
@@ -207,6 +208,8 @@ void PrometheusHTTPProtocolAPI::executePromQLQuery(
     PrometheusQueryEvaluationSettings evaluation_settings;
     evaluation_settings.time_series_storage_id = time_series_storage->getStorageID();
     evaluation_settings.time_series_version = time_series_storage->getVersion();
+    evaluation_settings.use_minute_rollups = getContext()->getSettingsRef()[Setting::time_series_use_minute_rollups]
+        && time_series_storage->hasTarget(ViewTarget::MinuteRollups);
     auto time_series_metadata = time_series_storage->getInMemoryMetadataPtr(getContext(), false);
     const auto * samples_column_name = TimeSeriesColumnNames::getOuterSamples(evaluation_settings.time_series_version);
     evaluation_settings.table_timestamp_type = splitTimeSeriesType(time_series_metadata->columns.get(samples_column_name).type).first;

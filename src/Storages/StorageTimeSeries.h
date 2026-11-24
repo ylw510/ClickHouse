@@ -66,7 +66,7 @@ public:
     /// A concrete table can have no recent samples or time ranges target (see hasTarget).
     static constexpr std::array<ViewTarget::Kind, 5> getTargetKinds()
     {
-        return {ViewTarget::Samples, ViewTarget::RecentSamples, ViewTarget::Tags, ViewTarget::TimeRanges, ViewTarget::MetricFamilies};
+        return {ViewTarget::Samples, ViewTarget::RecentSamples, ViewTarget::Tags, ViewTarget::TimeRanges, ViewTarget::MetricFamilies, ViewTarget::MinuteRollups};
     }
 
     /// Return the caches used to skip the rows already written to the "tags" and "metric families" tables,

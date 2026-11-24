@@ -50,6 +50,10 @@ bool isTimeSeriesRecentSamplesTargetEnabled(const ASTCreateQuery & query, bool f
 /// For an existing table prefer `StorageTimeSeries::hasTarget`, which needs neither normalization nor a supported version.
 bool isTimeSeriesTimeRangesTargetEnabled(const ASTCreateQuery & query, bool for_restore = false);
 
+/// Whether a CREATE TABLE ... ENGINE=TimeSeries query enables the optional minute rollup target.
+/// Default is false. A written `store_minute_rollups`, or a MINUTE ROLLUPS clause without the setting, enables it.
+bool isTimeSeriesMinuteRollupsTargetEnabled(const ASTCreateQuery & query, bool for_restore = false);
+
 
 /// Whether a CREATE TABLE ... ENGINE=TimeSeries query declares a target in a form written by users: inner columns,
 /// an inner engine, or an external table. An inner UUID doesn't count: it's stamped by UUID generation,
@@ -70,6 +74,7 @@ namespace detail
     /// (see TimeSeriesSettings.cpp, which asserts that they are equal).
     constexpr UInt64 TIME_SERIES_RECENT_SAMPLES_TTL_SECONDS_DEFAULT = 345600;
     constexpr bool TIME_SERIES_STORE_TIME_RANGES_DEFAULT = true;
+    constexpr bool TIME_SERIES_STORE_MINUTE_ROLLUPS_DEFAULT = false;
 }
 
 }

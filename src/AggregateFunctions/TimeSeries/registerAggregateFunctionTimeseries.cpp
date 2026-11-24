@@ -21,6 +21,9 @@ void registerAggregateFunctionTimeseriesVariance(AggregateFunctionFactory & fact
 void registerAggregateFunctionLast2Samples(AggregateFunctionFactory & factory);
 void registerAggregateFunctionTimeseriesGroupArray(AggregateFunctionFactory & factory);
 void registerAggregateFunctionTimeSeriesTopKMasks(AggregateFunctionFactory & factory);
+void registerAggregateFunctionTimeSeriesPromQLMinMax(AggregateFunctionFactory & factory);
+void registerAggregateFunctionTimeSeriesVarianceState(AggregateFunctionFactory & factory);
+void registerAggregateFunctionTimeSeriesRollupToGrid(AggregateFunctionFactory & factory);
 
 void registerAggregateFunctionTimeseries(AggregateFunctionFactory & factory);
 void registerAggregateFunctionTimeseries(AggregateFunctionFactory & factory)
@@ -42,6 +45,9 @@ void registerAggregateFunctionTimeseries(AggregateFunctionFactory & factory)
     registerAggregateFunctionLast2Samples(factory);
     registerAggregateFunctionTimeseriesGroupArray(factory);
     registerAggregateFunctionTimeSeriesTopKMasks(factory);
+    registerAggregateFunctionTimeSeriesPromQLMinMax(factory);
+    registerAggregateFunctionTimeSeriesVarianceState(factory);
+    registerAggregateFunctionTimeSeriesRollupToGrid(factory);
 }
 
 }

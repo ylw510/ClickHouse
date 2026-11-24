@@ -18,6 +18,9 @@ struct ConverterContext
     const StorageID time_series_storage_id;
     UInt64 time_series_version = TimeSeriesVersion::LATEST;
 
+    /// Read mergeable PromQL range functions from the minute rollup inner table.
+    bool use_minute_rollups = false;
+
     /// Data type of the column `timestamp` returned by the query built by the converter.
     /// All timestamps and durations in the converter (see TimestampType and DurationType) use `result_timestamp_scale`.
     DataTypePtr result_timestamp_type;

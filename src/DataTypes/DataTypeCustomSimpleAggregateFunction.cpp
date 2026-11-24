@@ -40,6 +40,8 @@ void DataTypeCustomSimpleAggregateFunction::checkSupportedFunctions(const Aggreg
         "max",
         "sum",
         "sumWithOverflow",
+        "timeSeriesMax",
+        "timeSeriesMin",
         "groupBitAnd",
         "groupBitOr",
         "groupBitXor",
