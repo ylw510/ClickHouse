@@ -103,7 +103,7 @@ PromQL 和 `AggregateFunctionTimeseriesBase` 的窗口都是 `(t - window, t]`�
 
 `GROUP BY` 之后把结果 `CAST` 成 `Array(Nullable(Float64))`，并按现有规则丢掉 metric name。
 
-建议的滑动聚合是一组新函数，输入已经按分钟聚合好的列，参数仍是网格的 `start`、`end`、`step`、`window`：
+滑动聚合是一组新函数，输入已经按分钟聚合好的列，参数仍是网格的 `start`、`end`、`step`、`window`：
 
 ```sql
 SELECT timeSeriesIdToGroup(id) AS group,
