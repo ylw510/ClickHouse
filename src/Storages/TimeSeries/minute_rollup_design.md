@@ -29,7 +29,7 @@
 - 引擎：`AggregatingMergeTree`。复制表沿用现有内表的 `Replicated` / `Shared` 前缀。
 - `ORDER BY (id, bucket)`。排序键就是聚合键，同一 `(id, bucket)` 的多批写入在后台合成一行。
 - 分区默认 `toYYYYMM(toDateTime(bucket, 'UTC'))`，与 `samples` 相同。
-- 行很窄，`index_granularity` 用 8192。
+- `index_granularity` 用 256，与 `samples` 相同。
 - 不设 TTL，保留时间与 `samples` 相同。
 - 不存 tags、metric name、time range。
 
