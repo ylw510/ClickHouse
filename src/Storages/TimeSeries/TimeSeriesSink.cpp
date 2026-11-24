@@ -1,5 +1,7 @@
 #include <Storages/TimeSeries/TimeSeriesSink.h>
 
+#include <AggregateFunctions/AggregateFunctionFactory.h>
+#include <Columns/ColumnAggregateFunction.h>
 #include <Columns/ColumnArray.h>
 #include <Columns/ColumnDecimal.h>
 #include <Columns/ColumnMap.h>
@@ -12,7 +14,10 @@
 #include <Common/typeid_cast.h>
 #include <Core/DecimalFunctions.h>
 #include <Core/Field.h>
+#include <DataTypes/DataTypeAggregateFunction.h>
 #include <DataTypes/DataTypeArray.h>
+#include <DataTypes/DataTypeFactory.h>
+#include <DataTypes/DataTypesNumber.h>
 #include <DataTypes/DataTypeLowCardinality.h>
 #include <DataTypes/DataTypeMap.h>
 #include <DataTypes/DataTypeNullable.h>
@@ -38,9 +43,12 @@
 #include <base/sort.h>
 
 #include <algorithm>
+#include <cstring>
+#include <limits>
 #include <optional>
 #include <ranges>
 #include <string_view>
+#include <type_traits>
 #include <unordered_map>
 #include <vector>
 
@@ -568,7 +576,175 @@ namespace
     {
         Block samples_block;
         std::optional<Block> recent_samples_block;
+        std::optional<Block> minute_rollup_block;
     };
+
+    constexpr UInt64 STALE_MARKER_BITS = 0x7ff0000000000002ULL;
+
+    Int64 minuteRollupBucket(Int64 timestamp, Int64 minute_step)
+    {
+        if (timestamp == std::numeric_limits<Int64>::min())
+            return timestamp;
+        return DateLUTImpl::roundDownToMultiple(timestamp - 1, minute_step);
+    }
+
+    void addAggregateValues(const AggregateFunctionPtr & function, AggregateDataPtr place, const PaddedPODArray<Float64> & values, Arena & arena)
+    {
+        if (values.empty())
+            return;
+        auto column = ColumnFloat64::create();
+        for (Float64 value : values)
+            column->getData().push_back(value);
+        const IColumn * columns[] = {column.get()};
+        for (size_t row = 0; row < values.size(); ++row)
+            function->add(place, columns, row, &arena);
+    }
+
+    /// One row per `(id, minute)` from samples that `sortSamples` already deduplicated.
+    template <typename TimestampColumn>
+    Block makeMinuteRollupBlock(
+        const PaddedPODArray<UInt8> & filter,
+        const IColumn & id_column,
+        const DataTypePtr & id_type,
+        const TimestampColumn & ts_timestamps,
+        const DataTypePtr & timestamp_type,
+        const IColumn & ts_values,
+        const PaddedPODArray<size_t> & sorted_indices,
+        const PaddedPODArray<size_t> & sorted_offsets,
+        Int64 minute_step,
+        bool values_are_float64)
+    {
+        auto quantile_type = DataTypeFactory::instance().get("AggregateFunction(quantileTDigest, Float64)");
+        auto variance_type = DataTypeFactory::instance().get("AggregateFunction(timeSeriesVariance, Float64)");
+        const auto & quantile_function = typeid_cast<const DataTypeAggregateFunction &>(*quantile_type).getFunction();
+        const auto & variance_function = typeid_cast<const DataTypeAggregateFunction &>(*variance_type).getFunction();
+
+        auto out_id = id_type->createColumn();
+        auto out_bucket = timestamp_type->createColumn();
+        auto out_max = ColumnFloat64::create();
+        auto out_min = ColumnFloat64::create();
+        auto out_sum = ColumnFloat64::create();
+        auto out_count = ColumnUInt64::create();
+        auto out_quantile = ColumnAggregateFunction::create(quantile_function);
+        auto out_variance = ColumnAggregateFunction::create(variance_function);
+        Arena & quantile_arena = out_quantile->createOrGetArena();
+        Arena & variance_arena = out_variance->createOrGetArena();
+
+        size_t id_index = 0;
+        for (size_t i = 0; i < filter.size(); ++i)
+        {
+            if (!filter[i])
+                continue;
+
+            const size_t row_begin = (i == 0) ? 0 : sorted_offsets[i - 1];
+            const size_t row_end = sorted_offsets[i];
+
+            using TimestampValue = std::decay_t<decltype(ts_timestamps.getData()[0])>;
+            auto push_bucket = [&](Int64 bucket)
+            {
+                assert_cast<TimestampColumn &>(*out_bucket).getData().push_back(static_cast<TimestampValue>(bucket));
+            };
+
+            std::optional<Int64> current_bucket;
+            Float64 max_v = 0;
+            Float64 min_v = 0;
+            Float64 sum = 0;
+            UInt64 count = 0;
+            bool has = false;
+            PaddedPODArray<Float64> values;
+
+            auto flush_current = [&]
+            {
+                if (!has)
+                    return;
+                out_id->insertFrom(id_column, id_index);
+                push_bucket(*current_bucket);
+                out_max->insertValue(max_v);
+                out_min->insertValue(min_v);
+                out_sum->insertValue(sum);
+                out_count->insertValue(count);
+
+                auto * quantile_place = quantile_arena.alignedAlloc(quantile_function->sizeOfData(), quantile_function->alignOfData());
+                quantile_function->create(quantile_place);
+                addAggregateValues(quantile_function, quantile_place, values, quantile_arena);
+                out_quantile->getData().push_back(quantile_place);
+
+                auto * variance_place = variance_arena.alignedAlloc(variance_function->sizeOfData(), variance_function->alignOfData());
+                variance_function->create(variance_place);
+                addAggregateValues(variance_function, variance_place, values, variance_arena);
+                out_variance->getData().push_back(variance_place);
+            };
+
+            for (size_t index = row_begin; index < row_end; ++index)
+            {
+                const size_t sample = sorted_indices[index];
+                const Float64 value = ts_values.getFloat64(sample);
+                if (values_are_float64)
+                {
+                    UInt64 bits = 0;
+                    memcpy(&bits, &value, sizeof(bits));
+                    if (bits == STALE_MARKER_BITS)
+                        continue;
+                }
+
+                const Int64 bucket = minuteRollupBucket(toDecimal64(ts_timestamps.getData()[sample]).value, minute_step);
+                if (!current_bucket || bucket != *current_bucket)
+                {
+                    flush_current();
+                    current_bucket = bucket;
+                    max_v = value;
+                    min_v = value;
+                    sum = 0;
+                    count = 0;
+                    has = false;
+                    values.clear();
+                }
+
+                if (!has)
+                {
+                    max_v = value;
+                    min_v = value;
+                    has = true;
+                }
+                else
+                {
+                    if (isNaN(max_v))
+                    {
+                        if (!isNaN(value))
+                            max_v = value;
+                    }
+                    else if (!isNaN(value) && value > max_v)
+                        max_v = value;
+
+                    if (isNaN(min_v))
+                    {
+                        if (!isNaN(value))
+                            min_v = value;
+                    }
+                    else if (!isNaN(value) && value < min_v)
+                        min_v = value;
+                }
+                sum += value;
+                ++count;
+                values.push_back(value);
+            }
+            flush_current();
+            ++id_index;
+        }
+
+        auto float64 = std::make_shared<DataTypeFloat64>();
+        auto uint64 = std::make_shared<DataTypeUInt64>();
+        Block block;
+        block.insert(ColumnWithTypeAndName{std::move(out_id), id_type, TimeSeriesColumnNames::ID});
+        block.insert(ColumnWithTypeAndName{std::move(out_bucket), timestamp_type, TimeSeriesColumnNames::Bucket});
+        block.insert(ColumnWithTypeAndName{std::move(out_max), float64, TimeSeriesColumnNames::Max});
+        block.insert(ColumnWithTypeAndName{std::move(out_min), float64, TimeSeriesColumnNames::Min});
+        block.insert(ColumnWithTypeAndName{std::move(out_sum), float64, TimeSeriesColumnNames::Sum});
+        block.insert(ColumnWithTypeAndName{std::move(out_count), uint64, TimeSeriesColumnNames::Count});
+        block.insert(ColumnWithTypeAndName{std::move(out_quantile), quantile_type, TimeSeriesColumnNames::Quantile});
+        block.insert(ColumnWithTypeAndName{std::move(out_variance), variance_type, TimeSeriesColumnNames::Variance});
+        return block;
+    }
 
     /// Builds the blocks for the samples tables from the series in the input block: the samples of each series
     /// are sorted once (see sortSamples), then split into the buckets of each table (see makeSamplesBlock).
@@ -584,7 +760,8 @@ namespace
         const DataTypePtr & value_type,
         const ColumnArray::Offsets & ts_offsets,
         Decimal64 samples_bucket_step,
-        std::optional<Decimal64> recent_samples_bucket_step)
+        std::optional<Decimal64> recent_samples_bucket_step,
+        std::optional<Int64> minute_rollup_step)
     {
         PaddedPODArray<size_t> sorted_indices;
         PaddedPODArray<size_t> sorted_offsets;
@@ -593,6 +770,14 @@ namespace
         SamplesBlocks res;
         res.samples_block = makeSamplesBlock(
             filter, id_column, id_type, ts_timestamps, timestamp_type, ts_values, value_type, sorted_indices, sorted_offsets, samples_bucket_step);
+
+        if (minute_rollup_step)
+        {
+            const bool values_are_float64 = value_type->getTypeId() == TypeIndex::Float64;
+            res.minute_rollup_block = makeMinuteRollupBlock(
+                filter, id_column, id_type, ts_timestamps, timestamp_type, ts_values, sorted_indices, sorted_offsets,
+                *minute_rollup_step, values_are_float64);
+        }
 
         if (recent_samples_bucket_step)
         {
@@ -625,7 +810,8 @@ namespace
         const ColumnArray::Offsets & ts_offsets,
         size_t total_samples,
         Decimal64 samples_bucket_step,
-        std::optional<Decimal64> recent_samples_bucket_step)
+        std::optional<Decimal64> recent_samples_bucket_step,
+        std::optional<Int64> minute_rollup_step)
     {
         if (!samples_bucket_step.value)
         {
@@ -639,10 +825,10 @@ namespace
         }
 
         if (const auto * decimal_timestamps = typeid_cast<const ColumnDecimal<DateTime64> *>(&ts_timestamps))
-            return makeSamplesBlocksForTimestampType(filter, id_column, id_type, *decimal_timestamps, timestamp_type, ts_values, value_type, ts_offsets, samples_bucket_step, recent_samples_bucket_step);
+            return makeSamplesBlocksForTimestampType(filter, id_column, id_type, *decimal_timestamps, timestamp_type, ts_values, value_type, ts_offsets, samples_bucket_step, recent_samples_bucket_step, minute_rollup_step);
 
         if (const auto * uint32_timestamps = typeid_cast<const ColumnUInt32 *>(&ts_timestamps))
-            return makeSamplesBlocksForTimestampType(filter, id_column, id_type, *uint32_timestamps, timestamp_type, ts_values, value_type, ts_offsets, samples_bucket_step, recent_samples_bucket_step);
+            return makeSamplesBlocksForTimestampType(filter, id_column, id_type, *uint32_timestamps, timestamp_type, ts_values, value_type, ts_offsets, samples_bucket_step, recent_samples_bucket_step, minute_rollup_step);
 
         throw Exception(ErrorCodes::ILLEGAL_COLUMN, "Unexpected column {} of timestamps in the column with samples", ts_timestamps.getName());
     }
@@ -1033,6 +1219,20 @@ void TimeSeriesSink::initTagsAndSamplesPipelines()
     /// The recent samples table (if any) receives every sample too, but its buckets can have another step.
     if (time_series_storage.hasTarget(ViewTarget::RecentSamples))
         recent_samples_pipeline = createTargetPipeline(ViewTarget::RecentSamples, samples_header);
+
+    if (settings.hasBucketedSamples() && time_series_storage.hasTarget(ViewTarget::MinuteRollups))
+    {
+        Block rollup_header;
+        rollup_header.insert(ColumnWithTypeAndName{id_type, TimeSeriesColumnNames::ID});
+        rollup_header.insert(ColumnWithTypeAndName{timestamp_type, TimeSeriesColumnNames::Bucket});
+        rollup_header.insert(ColumnWithTypeAndName{std::make_shared<DataTypeFloat64>(), TimeSeriesColumnNames::Max});
+        rollup_header.insert(ColumnWithTypeAndName{std::make_shared<DataTypeFloat64>(), TimeSeriesColumnNames::Min});
+        rollup_header.insert(ColumnWithTypeAndName{std::make_shared<DataTypeFloat64>(), TimeSeriesColumnNames::Sum});
+        rollup_header.insert(ColumnWithTypeAndName{std::make_shared<DataTypeUInt64>(), TimeSeriesColumnNames::Count});
+        rollup_header.insert(ColumnWithTypeAndName{DataTypeFactory::instance().get("AggregateFunction(quantileTDigest, Float64)"), TimeSeriesColumnNames::Quantile});
+        rollup_header.insert(ColumnWithTypeAndName{DataTypeFactory::instance().get("AggregateFunction(timeSeriesVariance, Float64)"), TimeSeriesColumnNames::Variance});
+        minute_rollups_pipeline = createTargetPipeline(ViewTarget::MinuteRollups, rollup_header);
+    }
 }
 
 
@@ -1213,13 +1413,22 @@ void TimeSeriesSink::consumeTagsAndSamples(const Block & block)
     /// visible in the TTL window and then disappear, which looks like data loss.
     if (total_samples)
     {
+        std::optional<Int64> minute_rollup_step;
+        if (minute_rollups_pipeline)
+        {
+            const Int64 scale_multiplier = DecimalUtils::scaleMultiplier<Int64>(tryGetDecimalScale(*timestamp_type).value_or(0));
+            minute_rollup_step = 60 * scale_multiplier;
+        }
+
         SamplesBlocks samples_blocks = makeSamplesBlocks(
             filter, *id_column, id_type, ts_timestamps, timestamp_type, ts_values, value_type, ts_offsets, total_samples,
-            samples_bucket_step, recent_samples_bucket_step);
+            samples_bucket_step, recent_samples_bucket_step, minute_rollup_step);
 
         samples_pipeline->push(std::move(samples_blocks.samples_block));
         if (samples_blocks.recent_samples_block)
             recent_samples_pipeline->push(std::move(*samples_blocks.recent_samples_block));
+        if (samples_blocks.minute_rollup_block && minute_rollups_pipeline)
+            minute_rollups_pipeline->push(std::move(*samples_blocks.minute_rollup_block));
     }
 }
 
@@ -1304,6 +1513,8 @@ void TimeSeriesSink::onFinish()
         samples_pipeline->executor->finish();
     if (recent_samples_pipeline)
         recent_samples_pipeline->executor->finish();
+    if (minute_rollups_pipeline)
+        minute_rollups_pipeline->executor->finish();
     if (metric_families_pipeline)
     {
         metric_families_pipeline->executor->finish();

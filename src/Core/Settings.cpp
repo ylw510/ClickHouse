@@ -11069,6 +11069,10 @@ Allows creation of tables with the [TimeSeries](/reference/engines/table-engines
 Read from the recent samples table of a [TimeSeries](/reference/engines/table-engines/integrations/time-series) table instead of the main samples table when the whole requested time range fits in the TTL window of the recent samples table (see the `recent_samples_ttl_seconds` setting of the TimeSeries table engine).
 )", PRIVATE_PREVIEW, \
         {"26.8", true, true, "New setting to read from the recent samples table of a TimeSeries table when the requested time range fits in its TTL window."}) \
+    DECLARE(Bool, time_series_use_minute_rollups, true, R"(
+Read mergeable PromQL range functions (`max_over_time`, `min_over_time`, `sum_over_time`, `avg_over_time`, `count_over_time`, `present_over_time`, `absent_over_time`, `quantile_over_time`, `stddev_over_time`, `stdvar_over_time`) from the minute rollup inner table of a [TimeSeries](/reference/engines/table-engines/integrations/time-series) table when that table was created with `store_minute_rollups = 1`. Functions that need raw samples (`rate`, `deriv`, and the other non-mergeable range functions) keep reading `samples`.
+)", PRIVATE_PREVIEW, \
+        {"26.11", true, true, "New setting to read mergeable PromQL range functions from the TimeSeries minute rollup table."}) \
     DECLARE(UInt64, unique_key_max_encoded_size, 256, R"(
 Maximum size (in bytes) of the order-preserving binary encoding of a single `UNIQUE KEY` row.
 )", EXPERIMENTAL, \

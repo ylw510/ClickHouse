@@ -153,6 +153,12 @@ bool ParserViewTargets::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
                     break;
                 }
 
+                case ViewTarget::MinuteRollups:
+                {
+                    parsed |= tryParseViewTarget(kind, Keyword::MINUTE_ROLLUPS, pos, expected, res);
+                    break;
+                }
+
                 case ViewTarget::To:
                 case ViewTarget::Inner:
                 {

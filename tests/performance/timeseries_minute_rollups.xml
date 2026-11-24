@@ -1,0 +1,33 @@
+<test>
+    <settings>
+        <allow_experimental_time_series_table>1</allow_experimental_time_series_table>
+        <enable_time_series_aggregate_functions>1</enable_time_series_aggregate_functions>
+    </settings>
+
+    <create_query>CREATE TABLE ts_rollup_source (metric_name String, tags Map(String, String), samples Array(Tuple(DateTime64(3), Float64))) ENGINE = MergeTree ORDER BY metric_name</create_query>
+    <create_query>CREATE TABLE ts_off ENGINE = TimeSeries SETTINGS store_minute_rollups = 0</create_query>
+    <create_query>CREATE TABLE ts_on ENGINE = TimeSeries SETTINGS store_minute_rollups = 1</create_query>
+
+    <!-- 200 series, one sample every 15s for one hour. -->
+    <fill_query>
+        INSERT INTO ts_rollup_source
+        SELECT
+            'cpu',
+            map('job', 'node', 'instance', toString(number % 200)),
+            [(toDateTime64(intDiv(number, 200) * 15, 3), (number % 1000)::Float64)]
+        FROM numbers_mt(200 * 240)
+    </fill_query>
+
+    <query>INSERT INTO ts_off (metric_name, tags, samples) SELECT metric_name, tags, samples FROM ts_rollup_source</query>
+    <query>INSERT INTO ts_on (metric_name, tags, samples) SELECT metric_name, tags, samples FROM ts_rollup_source</query>
+
+    <query>SELECT * FROM prometheusQuery(ts_off, 'max_over_time(cpu[15m])', toDateTime64(3600, 3)) FORMAT Null</query>
+    <query>SELECT * FROM prometheusQuery(ts_on, 'max_over_time(cpu[15m])', toDateTime64(3600, 3)) FORMAT Null</query>
+    <query>SELECT * FROM prometheusQuery(ts_on, 'max_over_time(cpu[15m])', toDateTime64(3600, 3)) FORMAT Null SETTINGS time_series_use_minute_rollups = 0</query>
+    <query>SELECT * FROM prometheusQuery(ts_off, 'rate(cpu[15m])', toDateTime64(3600, 3)) FORMAT Null</query>
+    <query>SELECT * FROM prometheusQuery(ts_on, 'rate(cpu[15m])', toDateTime64(3600, 3)) FORMAT Null</query>
+
+    <drop_query>DROP TABLE IF EXISTS ts_rollup_source</drop_query>
+    <drop_query>DROP TABLE IF EXISTS ts_off</drop_query>
+    <drop_query>DROP TABLE IF EXISTS ts_on</drop_query>
+</test>

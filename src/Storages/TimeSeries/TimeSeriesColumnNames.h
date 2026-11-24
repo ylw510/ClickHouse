@@ -48,6 +48,13 @@ struct TimeSeriesColumnNames
     /// The outer column with (timestamp, value) pairs of a time series, also returned by `prometheusQuery` and `prometheusQueryRange`,
     /// and the column of `timeSeriesSelector` with the sorted samples of a time series.
     /// It's named `time_series` in tables of versions before 3, see `getOuterSamples`.
+    static constexpr const char * Max = "max";
+    static constexpr const char * Min = "min";
+    static constexpr const char * Sum = "sum";
+    static constexpr const char * Count = "count";
+    static constexpr const char * Quantile = "quantile";
+    static constexpr const char * Variance = "variance";
+
     static constexpr const char * Samples = "samples";
     static constexpr const char * TimeSeries = "time_series";
 

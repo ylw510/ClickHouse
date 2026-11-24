@@ -84,6 +84,17 @@ bool isTimeSeriesRecentSamplesTargetEnabled(const ASTCreateQuery & query, bool f
 }
 
 
+bool isTimeSeriesMinuteRollupsTargetEnabled(const ASTCreateQuery & query, bool /*for_restore*/)
+{
+    if (const auto * value = tryGetSettingValue(query, "store_minute_rollups"))
+        return fieldToNumberSettingValue<bool>(*value);
+
+    /// A definition that already names the target (a backup, or a query normalized earlier) keeps it
+    /// when the setting itself was not written.
+    return hasTimeSeriesTargetDefinition(query, ViewTarget::MinuteRollups);
+}
+
+
 bool isTimeSeriesTimeRangesTargetEnabled(const ASTCreateQuery & query, bool for_restore)
 {
     if (const auto * value = tryGetSettingValue(query, "store_time_ranges"))
@@ -120,6 +131,8 @@ size_t countTimeSeriesInnerTables(const ASTCreateQuery & query, bool for_restore
         result += count_inner_table(ViewTarget::RecentSamples);
     if (isTimeSeriesTimeRangesTargetEnabled(query, for_restore))
         result += count_inner_table(ViewTarget::TimeRanges);
+    if (isTimeSeriesMinuteRollupsTargetEnabled(query, for_restore))
+        result += count_inner_table(ViewTarget::MinuteRollups);
     return result;
 }
 

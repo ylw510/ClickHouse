@@ -89,7 +89,7 @@ namespace
     /// and `store_time_ranges` settings (see `isOptionalTarget` in StorageTimeSeries.cpp).
     constexpr std::array<ViewTarget::Kind, 5> getTargetKinds()
     {
-        return {ViewTarget::Samples, ViewTarget::RecentSamples, ViewTarget::Tags, ViewTarget::TimeRanges, ViewTarget::MetricFamilies};
+        return {ViewTarget::Samples, ViewTarget::RecentSamples, ViewTarget::Tags, ViewTarget::TimeRanges, ViewTarget::MetricFamilies, ViewTarget::MinuteRollups};
     }
 
     /// If `type` is `Array(Tuple(timestamp_type, value_type))`, optionally wrapped in `SimpleAggregateFunction`, returns
@@ -599,6 +599,9 @@ namespace
             case ViewTarget::TimeRanges:
                 return "AggregatingMergeTree";
 
+            case ViewTarget::MinuteRollups:
+                return "AggregatingMergeTree";
+
             case ViewTarget::MetricFamilies:
                 return "ReplacingMergeTree";
 
@@ -1096,6 +1099,50 @@ namespace
                 return false;
             }
 
+            case ViewTarget::MinuteRollups:
+            {
+                if (has_default)
+                    return false;
+
+                if (name == TimeSeriesColumnNames::ID)
+                    return !codec;
+
+                if (name == TimeSeriesColumnNames::Bucket)
+                {
+                    if (!is_timestamp_type(*type))
+                        return false;
+                    return !codec || same_ast(*codec, *getDefaultTimestampCodec());
+                }
+
+                auto is_simple = [&](std::string_view function_name, const DataTypePtr & argument)
+                {
+                    const auto * simple = typeid_cast<const DataTypeCustomSimpleAggregateFunction *>(type->getCustomName());
+                    if (!simple || codec)
+                        return false;
+                    const auto & argument_types = simple->getArgumentsDataTypes();
+                    return (simple->getFunctionName() == function_name) && (argument_types.size() == 1) && argument_types[0]->equals(*argument);
+                };
+
+                auto float64 = std::make_shared<DataTypeFloat64>();
+                auto uint64 = std::make_shared<DataTypeUInt64>();
+                if (name == TimeSeriesColumnNames::Max)
+                    return is_simple("timeSeriesMax", float64);
+                if (name == TimeSeriesColumnNames::Min)
+                    return is_simple("timeSeriesMin", float64);
+                if (name == TimeSeriesColumnNames::Sum)
+                    return is_simple("sum", float64);
+                if (name == TimeSeriesColumnNames::Count)
+                    return is_simple("sum", uint64);
+
+                if (codec)
+                    return false;
+                if (name == TimeSeriesColumnNames::Quantile)
+                    return type_name.starts_with("AggregateFunction(quantileTDigest");
+                if (name == TimeSeriesColumnNames::Variance)
+                    return type_name.starts_with("AggregateFunction(timeSeriesVariance");
+                return false;
+            }
+
             case ViewTarget::MetricFamilies:
             {
                 if (has_default || codec)
@@ -1328,6 +1375,18 @@ namespace
                 break;
             }
 
+            case ViewTarget::MinuteRollups:
+            {
+                if (!inner_engine.primary_key && sorting_key_equals("id, bucket"))
+                    inner_engine.reset(inner_engine.order_by);
+                if (partitioning_equals(getDefaultSamplesPartitionKey()->formatWithSecretsOneLine()))
+                    inner_engine.reset(inner_engine.partition_by);
+                remove_settings({
+                    {"index_granularity", static_cast<UInt64>(256)},
+                    {"index_granularity_bytes", static_cast<UInt64>(262144)}});
+                break;
+            }
+
             case ViewTarget::Tags:
             {
                 /// The primary key and the sorting key are connected, so they are considered together.
@@ -1550,6 +1609,23 @@ namespace
                 break;
             }
 
+            case ViewTarget::MinuteRollups:
+            {
+                add_column_if_missing(TimeSeriesColumnNames::ID, dataTypeToAST(resolved_types.id_type));
+
+                auto float64 = std::make_shared<DataTypeFloat64>();
+                auto uint64 = std::make_shared<DataTypeUInt64>();
+                if (auto * bucket_decl = add_column_if_missing(TimeSeriesColumnNames::Bucket, dataTypeToAST(resolved_types.timestamp_type)))
+                    bucket_decl->setCodec(getDefaultTimestampCodec());
+                add_column_if_missing(TimeSeriesColumnNames::Max, makeSimpleAggregate("timeSeriesMax", float64));
+                add_column_if_missing(TimeSeriesColumnNames::Min, makeSimpleAggregate("timeSeriesMin", float64));
+                add_column_if_missing(TimeSeriesColumnNames::Sum, makeSimpleAggregate("sum", float64));
+                add_column_if_missing(TimeSeriesColumnNames::Count, makeSimpleAggregate("sum", uint64));
+                add_column_if_missing(TimeSeriesColumnNames::Quantile, dataTypeToAST(DataTypeFactory::instance().get("AggregateFunction(quantileTDigest, Float64)")));
+                add_column_if_missing(TimeSeriesColumnNames::Variance, dataTypeToAST(DataTypeFactory::instance().get("AggregateFunction(timeSeriesVariance, Float64)")));
+                break;
+            }
+
             case ViewTarget::MetricFamilies:
             {
                 /// The column with the name of a metric family is named by the version (see TimeSeriesVersion.h),
@@ -1673,7 +1749,8 @@ namespace
         {
             /// Prealpha tables predate the optional targets (the recent samples and the time ranges tables), so there is
             /// nothing to convert for them, and no such target should be added to an old table's definition.
-            if ((inner_table_kind == ViewTarget::RecentSamples) || (inner_table_kind == ViewTarget::TimeRanges))
+            if ((inner_table_kind == ViewTarget::RecentSamples) || (inner_table_kind == ViewTarget::TimeRanges)
+                || (inner_table_kind == ViewTarget::MinuteRollups))
                 continue;
             if (hasTargetTableID(create_query, inner_table_kind))
                 continue;
@@ -1775,6 +1852,9 @@ namespace
                     add_column(TimeSeriesColumnNames::Help, makeASTDataType("String"));
                     break;
                 }
+
+                case ViewTarget::MinuteRollups:
+                    break;
 
                 default:
                     UNREACHABLE();
@@ -1997,6 +2077,29 @@ namespace
                 }
 
                 set_ttl(getRecentSamplesTTLFromSettings(settings));
+                break;
+            }
+
+            case ViewTarget::MinuteRollups:
+            {
+                if (!inner_engine.engine->name.ends_with("AggregatingMergeTree"))
+                    throw Exception(ErrorCodes::INCORRECT_QUERY,
+                        "{}: The inner minute rollups table requires an engine of the AggregatingMergeTree family, got {}",
+                        table_id.getNameForLogs(), inner_engine.engine->name);
+
+                if (needs_sorting_key())
+                {
+                    set_sorting_key({make_intrusive<ASTIdentifier>(TimeSeriesColumnNames::ID),
+                        make_intrusive<ASTIdentifier>(TimeSeriesColumnNames::Bucket)});
+                }
+
+                if (!has_engine_setting("index_granularity"))
+                    set_engine_setting("index_granularity", 256);
+                if (!has_engine_setting("index_granularity_bytes"))
+                    set_engine_setting("index_granularity_bytes", 262144);
+
+                if (!has_partition_by())
+                    set_partition_by(getDefaultSamplesPartitionKey());
                 break;
             }
 
@@ -2321,6 +2424,29 @@ namespace
                 break;
             }
 
+            case ViewTarget::MinuteRollups:
+            {
+                check_column_type(TimeSeriesColumnNames::ID, resolved_types.id_type);
+                check_column_type(TimeSeriesColumnNames::Bucket, resolved_types.timestamp_type);
+
+                auto check_type_has = [&](std::string_view column_name, std::string_view expected)
+                {
+                    check_column(column_name);
+                    const auto * col = target_table_columns.tryGet(String(column_name));
+                    if (col->type->getName().find(expected) == std::string::npos)
+                        throw Exception(ErrorCodes::BAD_TYPE_OF_FIELD,
+                            "{}: Column {} in the minute rollups table has type {}, but expected a type containing {}",
+                            table_id.getNameForLogs(), column_name, col->type->getName(), expected);
+                };
+                check_type_has(TimeSeriesColumnNames::Max, "timeSeriesMax");
+                check_type_has(TimeSeriesColumnNames::Min, "timeSeriesMin");
+                check_type_has(TimeSeriesColumnNames::Sum, "SimpleAggregateFunction(sum, Float64)");
+                check_type_has(TimeSeriesColumnNames::Count, "SimpleAggregateFunction(sum, UInt64)");
+                check_type_has(TimeSeriesColumnNames::Quantile, "quantileTDigest");
+                check_type_has(TimeSeriesColumnNames::Variance, "timeSeriesVariance");
+                break;
+            }
+
             case ViewTarget::MetricFamilies:
             {
                 check_metric_family_column(TimeSeriesColumnNames::getInnerMetricFamily(time_series_settings[TimeSeriesSetting::version]));
@@ -2473,6 +2599,8 @@ namespace
                 continue;
             if ((kind == ViewTarget::TimeRanges) && !new_settings.isTimeRangesTargetEnabled())
                 continue;
+            if ((kind == ViewTarget::MinuteRollups) && !new_settings.isMinuteRollupsTargetEnabled())
+                continue;
 
             if (!hasTargetTableID(create_query, kind) && !hasInnerColumns(create_query, kind))
             {
@@ -2576,6 +2704,7 @@ void normalizeTimeSeriesDefinitionImpl(ASTCreateQuery & create_query, const Norm
     /// so the flags don't count a target copied from the `AS <other_table>` clause.
     bool has_recent_samples_definition = hasTimeSeriesTargetDefinition(create_query, ViewTarget::RecentSamples);
     bool has_time_ranges_definition = hasTimeSeriesTargetDefinition(create_query, ViewTarget::TimeRanges);
+    bool has_minute_rollups_definition = hasTimeSeriesTargetDefinition(create_query, ViewTarget::MinuteRollups);
 
     /// The definition of the table from the clause `AS <other_table>` if any, and its resolved types.
     /// The clause is used only for a new table: the stored definition of an existing table has no such clause.
@@ -2657,6 +2786,14 @@ void normalizeTimeSeriesDefinitionImpl(ASTCreateQuery & create_query, const Norm
 
         const bool recent_samples_enabled = settings.isRecentSamplesTargetEnabled();
 
+        /// Pin `store_minute_rollups` on tables that know the setting, so a later default change does not turn the table on or off.
+        if ((settings[TimeSeriesSetting::version] >= TimeSeriesVersion::MIN_WITH_MINUTE_ROLLUPS)
+            && !settings[TimeSeriesSetting::store_minute_rollups].isChanged() && create_query.storage)
+        {
+            setEngineSettings(*create_query.storage, "store_minute_rollups",
+                Field(settings[TimeSeriesSetting::store_minute_rollups].value ? UInt64(1) : UInt64(0)));
+        }
+
         /// Pin the steps of the buckets, so that the table keeps its buckets if a future version changes the defaults:
         /// the rows are read with the assumption that the buckets are aligned to the steps.
         if (settings.hasBucketedSamples() && create_query.storage)
@@ -2704,12 +2841,30 @@ void normalizeTimeSeriesDefinitionImpl(ASTCreateQuery & create_query, const Norm
                 create_query.targets->removeTarget(ViewTarget::TimeRanges);
         }
 
+        const bool minute_rollups_enabled = settings.isMinuteRollupsTargetEnabled();
+        if (!minute_rollups_enabled)
+        {
+            if (has_minute_rollups_definition)
+            {
+                if (settings[TimeSeriesSetting::version] < TimeSeriesVersion::MIN_WITH_MINUTE_ROLLUPS)
+                    throw Exception(ErrorCodes::INCORRECT_QUERY,
+                        "The MINUTE ROLLUPS target requires `version` to be at least {}, but the table has version {}",
+                        TimeSeriesVersion::MIN_WITH_MINUTE_ROLLUPS, settings[TimeSeriesSetting::version].value);
+                throw Exception(ErrorCodes::INCORRECT_QUERY,
+                    "The MINUTE ROLLUPS target requires the setting `store_minute_rollups` to be enabled");
+            }
+            if (create_query.targets)
+                create_query.targets->removeTarget(ViewTarget::MinuteRollups);
+        }
+
         for (auto kind : getTargetKinds())
         {
             /// The recent samples target is on by default and disabled by an explicit `recent_samples_ttl_seconds = 0`.
             if ((kind == ViewTarget::RecentSamples) && !recent_samples_enabled)
                 continue;
             if ((kind == ViewTarget::TimeRanges) && !time_ranges_enabled)
+                continue;
+            if ((kind == ViewTarget::MinuteRollups) && !minute_rollups_enabled)
                 continue;
 
             if (hasTargetTableID(create_query, kind))

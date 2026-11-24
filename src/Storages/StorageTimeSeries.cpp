@@ -114,7 +114,7 @@ namespace
     /// setting, and the TimeRanges target is enabled by the `store_time_ranges` setting.
     constexpr bool isOptionalTarget(ViewTarget::Kind target_kind)
     {
-        return (target_kind == ViewTarget::RecentSamples) || (target_kind == ViewTarget::TimeRanges);
+        return (target_kind == ViewTarget::RecentSamples) || (target_kind == ViewTarget::TimeRanges) || (target_kind == ViewTarget::MinuteRollups);
     }
 }
 
@@ -1223,7 +1223,7 @@ CREATE TABLE my_table
     `help` String
 )
 ENGINE = TimeSeries
-SETTINGS version = 11, recent_samples_ttl_seconds = 345600, samples_bucket_step_seconds = 3600, recent_samples_bucket_step_seconds = 900
+SETTINGS version = 12, recent_samples_ttl_seconds = 345600, samples_bucket_step_seconds = 3600, recent_samples_bucket_step_seconds = 900, store_minute_rollups = 0
 SAMPLES INNER COLUMNS
 (
     `id` Tuple(UInt64, LowCardinality(UUID)),
@@ -1578,6 +1578,7 @@ The following settings apply to tables of earlier [versions](#schema-versioning)
 | `store_min_time_and_max_time` | Bool | true | If set to true then the table will store `min_time` and `max_time` for each time series in the [tags](#tags-table) table. Applies to tables of [version](#schema-versioning) 7 or earlier only, the later versions use `store_time_ranges` instead |
 | `aggregate_min_time_and_max_time` | Bool | true | When creating an inner target `tags` table, this flag enables using `SimpleAggregateFunction(min, Nullable(DateTime64(3)))` instead of just `Nullable(DateTime64(3))` as the type of the `min_time` column, and the same for the `max_time` column. Applies to tables of version 7 or earlier only |
 | `filter_by_min_time_and_max_time` | Bool | true | If set to true then the table will use the `min_time` and `max_time` columns of the [tags](#tags-table) table for filtering time series. Applies to tables of version 7 or earlier only |
+| `store_minute_rollups` | Bool | false | If set to true, the table also writes a minute rollup inner table: one aggregating row per time series per minute. `samples` is unchanged. Mergeable PromQL range functions read it when the query setting `time_series_use_minute_rollups` is enabled. Requires `version` 12 or later. The value is pinned at `CREATE` time |
 | `use_all_tags_column_to_generate_id` | Bool | false | Obsolete setting, does nothing |
 
 ## Schema versioning {#schema-versioning}
@@ -1618,6 +1619,7 @@ the `promql` dialect, and the Prometheus HTTP query API):
 | 9 | The default partition key of an inner [recent samples](#recent-samples-table) table names the timezone: `toStartOfInterval(toDateTime(timestamp, 'UTC'), toIntervalHour(5))`. Earlier versions generate it without one, and `toStartOfInterval` counts hours from local midnight, so a change of the server timezone moves the meaning of the partition values they have already written. Existing tables keep the key they were created with, which no `ALTER` can change |
 | 10 | External target tables are not supported for new tables: every target of a table of this version is an inner table. The settings `id_type` and `id_generator` are not supported either: the type of the `id` column and the expression generating identifiers are declared in `TAGS INNER COLUMNS` (see [The `id` column](#id-column)). Tables of earlier versions keep their external target tables and these settings. The stored data didn't change |
 | 11 | The [samples](#samples-table) and [recent samples](#recent-samples-table) tables store buckets of samples: a row keeps the samples of one time series within one time bucket (the columns `samples`, `bucket`, `min_time`, `max_time`) in an `AggregatingMergeTree` ordered by `(id, bucket)`. The settings [`samples_bucket_step_seconds`](#settings), [`samples_partition_by`](#settings), [`samples_index_granularity_bytes`](#settings), [`recent_samples_bucket_step_seconds`](#settings) and [`recent_samples_index_granularity_bytes`](#settings) were introduced, and the defaults of [`samples_index_granularity`](#settings) and [`recent_samples_index_granularity`](#settings) changed. Tables of earlier versions store one sample per row in the columns `timestamp` and `value`: they can still be read, written into and queried with PromQL, and the [timeSeriesSelector](/reference/functions/table-functions/timeSeriesSelector) table function reads them without a conversion when its argument `return_columns` is `'timestamp_and_value'` |
+| 12 | Optional minute rollup inner table, enabled by [`store_minute_rollups`](#settings). One aggregating row per time series per minute (`id`, `bucket`, `max`, `min`, `sum`, `count`, `quantile`, `variance`). `samples` is unchanged |
 
 # Functions {#functions}
 

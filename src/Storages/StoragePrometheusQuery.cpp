@@ -155,6 +155,8 @@ StoragePrometheusQuery::Configuration StoragePrometheusQuery::getConfiguration(A
     auto & evaluation_settings = config.evaluation_settings;
     evaluation_settings.time_series_storage_id = std::move(time_series_storage_id);
     evaluation_settings.time_series_version = time_series_version;
+    evaluation_settings.use_minute_rollups = context->getSettingsRef()[Setting::time_series_use_minute_rollups]
+        && time_series_storage->hasTarget(ViewTarget::MinuteRollups);
     evaluation_settings.time_zone = getPromQLResultTimeZone(table_timestamp_type, time_parameter_types);
     evaluation_settings.table_timestamp_type = std::move(table_timestamp_type);
     evaluation_settings.time_scale = time_scale;

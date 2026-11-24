@@ -48,6 +48,10 @@ struct ViewTarget
         /// The "metric families" table for a TimeSeries table, contains general information (metadata) about metric families.
         /// The keyword `METRICS` is an old name of this target, it's kept for compatibility.
         MetricFamilies,
+
+        /// Optional minute rollup of samples: one aggregating row per time series per minute.
+        /// Appended at the end so existing serialized kind numbers stay valid.
+        MinuteRollups,
     };
 
     explicit ViewTarget(Kind kind_);

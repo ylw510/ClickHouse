@@ -27,6 +27,9 @@ struct PrometheusQueryEvaluationSettings
     StorageID time_series_storage_id = StorageID::createEmpty();
     UInt64 time_series_version = TimeSeriesVersion::LATEST;
 
+    /// The table has a minute rollup and the query setting `time_series_use_minute_rollups` is on.
+    bool use_minute_rollups = false;
+
     /// Data type of the timestamp column in the TimeSeries table.
     DataTypePtr table_timestamp_type;
 

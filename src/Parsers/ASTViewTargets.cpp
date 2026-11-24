@@ -40,6 +40,7 @@ namespace
             case ViewTarget::Tags:    return Keyword::TAGS;    /// TAGS mydb.mytags
             case ViewTarget::TimeRanges: return Keyword::TIME_RANGES; /// TIME RANGES mydb.mytimeranges
             case ViewTarget::MetricFamilies: return Keyword::METRIC_FAMILIES; /// METRIC FAMILIES mydb.mymetricfamilies
+            case ViewTarget::MinuteRollups: return Keyword::MINUTE_ROLLUPS; /// MINUTE ROLLUPS mydb.myminuterollups
         }
         UNREACHABLE();
     }
