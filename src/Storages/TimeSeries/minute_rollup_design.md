@@ -56,6 +56,12 @@
 
 `sum` 是普通 `Float64` 求和。`timeSeriesSumToGrid` 使用 Kahan 补偿，先按分钟相加再相加窗口，低位会和逐点补偿和差几个 ulp。`max`、`min`、`count` 可以逐位相等；`sum` 和 `avg` 的测试用相对误差。
 
+`avg` 不单独建列。`avg_over_time` 用已有的 `sum` 和 `count`：窗口内 `sum` 之和除以 `count` 之和。同一分钟的多批写入、以及相邻分钟合成一个窗口，都是先把 `sum` 和 `count` 加起来再相除。
+
+算好的 `Float64` 平均值不能存。两批的平均值再平均，权重和各自的点数无关，结果不是这批点的平均值。`SimpleAggregateFunction(avg, Float64)` 也不成立：`avg` 的状态是总和加计数，不是一个 `Float64`，`SimpleAggregateFunction` 只接受 `any`、`min`、`max`、`sum` 这类状态与结果同型的函数。`AggregateFunction(avg, Float64)` 可以合并，但它存的仍是总和和计数，与 `sum`、`count` 两列重复。
+
+和 `avg` 同类、已经能从现有列得到的还有 `present_over_time`（`count` 之和大于 0）。`stddev_over_time` 和 `stdvar_over_time` 不能从 `sum` 和 `count` 得到；若要存，再加一列 `sumsq SimpleAggregateFunction(sum, Float64)`（值的平方和），查询时用 `sumsq / count - (sum / count)^2`。这一列本方案先不加。`mad_over_time`、`first_over_time`、`last_over_time` 和 `rate` 都不是一个可合并的 `Float64`。
+
 ## bucket
 
 PromQL 和 `AggregateFunctionTimeseriesBase` 的窗口都是 `(t - window, t]`。`fromSelector` 把它写成闭区间 `[start - window + 1 tick, end]`。
