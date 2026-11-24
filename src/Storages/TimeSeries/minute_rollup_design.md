@@ -37,6 +37,7 @@
 | `sum` | `SimpleAggregateFunction(sum, Float64)` |
 | `count` | `SimpleAggregateFunction(sum, UInt64)` |
 | `quantile` | `AggregateFunction(quantileTDigest, Float64)` |
+| `variance` | `AggregateFunction(timeSeriesVariance, Float64)` |
 
 `timeSeriesMax` 和 `timeSeriesMin` 的状态仍是 `Float64`，比较规则与 `timeSeriesMaxToGrid` / `timeSeriesMinToGrid` 相同：NaN 输给任何实数。裸的 `SimpleAggregateFunction(max, Float64)` 对 NaN 的比较与这条规则不同，所以不用它。
 
@@ -48,7 +49,11 @@
 
 算好的 `Float64` 平均值不能存。两批的平均值再平均，权重和各自的点数无关，结果不是这批点的平均值。`SimpleAggregateFunction(avg, Float64)` 也不成立：`avg` 的状态是总和加计数，不是一个 `Float64`，`SimpleAggregateFunction` 只接受 `any`、`min`、`max`、`sum` 这类状态与结果同型的函数。`AggregateFunction(avg, Float64)` 可以合并，但它存的仍是总和和计数，与 `sum`、`count` 两列重复。
 
-和 `avg` 同类、已经能从现有列得到的还有 `present_over_time`（`count` 之和大于 0）。`stddev_over_time` 和 `stdvar_over_time` 不能从 `sum` 和 `count` 得到；若要存，再加一列 `sumsq SimpleAggregateFunction(sum, Float64)`（值的平方和），查询时用 `sumsq / count - (sum / count)^2`。这一列本方案先不加。`mad_over_time`、`first_over_time`、`last_over_time` 和 `rate` 都不是一个可合并的 `Float64`。
+和 `avg` 同类、已经能从现有列得到的还有 `present_over_time`（`count` 之和大于 0）。
+
+`stddev_over_time` 和 `stdvar_over_time` 也可以走分钟表，但 `sum` 和 `count` 不够，算好的标准差也不能存。`timeSeriesStddevToGrid` 用的是 Welford/Chan 的总体矩：状态是 `{count, mean, m2}`，`m2` 是对各自均值的平方差之和。两段这样的状态可以用 Chan 公式合并，合并满足结合律，和 `Summary::merge` 相同。`variance` 列就存这个状态。查询时把窗口里相交分钟的状态合并，`stdvar_over_time` 是 `m2 / count`，`stddev_over_time` 再开平方。不用 `sumsq / count - (sum / count)^2`，那个公式在数值接近时会抵消，现有 ToGrid 也避开了它。`variance` 里的 `count` 和 `count` 列是同一批去重、去掉 stale marker 之后的点。
+
+`mad_over_time`、`first_over_time`、`last_over_time` 和 `rate` 都不是一个可合并的 `Float64`。
 
 ## bucket
 
@@ -69,7 +74,7 @@ PromQL 和 `AggregateFunctionTimeseriesBase` 的窗口都是 `(t - window, t]`�
 
 写在 `TimeSeriesSink` 里，`makeSamplesBlocksForTimestampType` 调用 `sortSamples` 之后。这一步已经按 series 排序，并且同一时间戳只保留值最大的点，NaN 输给实数，与 `timeSeriesGroupArray` 合并时的去重一致。rollup 使用这批下标，不再对未去重的原始数组聚合。
 
-对每个 series，按上面的右闭分钟切分，每个 `(id, 分钟)` 写一行：`max`、`min`、`sum`、`count`，以及该分钟内点的 `quantileTDigest` 状态。
+对每个 series，按上面的右闭分钟切分，每个 `(id, 分钟)` 写一行：`max`、`min`、`sum`、`count`，该分钟内点的 `quantileTDigest` 状态，以及 `{count, mean, m2}`。
 
 写入前丢掉 stale marker（`0x7ff0000000000002`）。range selector 在进入 `timeSeries*ToGrid` 之前会用 `arrayFilter` 去掉它。某一分钟只剩 stale marker 时不写行。
 
@@ -81,7 +86,7 @@ PromQL 和 `AggregateFunctionTimeseriesBase` 的窗口都是 `(t - window, t]`�
 
 判定放在 PromQL 转 SQL 的路径上（`applyFunctionOverRange` 及其同类），不放在 `StorageTimeSeriesSelector`。selector 只看到时间范围，看不到函数、步长和网格是否对齐。
 
-读 rollup 时不读 `samples`。`tags` 和 `time ranges` 仍先得到 `id`。`timeSeriesSelector` 增加返回列模式 `minute_rollups`，复用现有的 id 过滤，选出 `id, bucket, max, min, sum, count, quantile`。
+读 rollup 时不读 `samples`。`tags` 和 `time ranges` 仍先得到 `id`。`timeSeriesSelector` 增加返回列模式 `minute_rollups`，复用现有的 id 过滤，选出 `id, bucket, max, min, sum, count, quantile, variance`。
 
 不使用 `FINAL`。同一分钟尚未合并的部分行由查询侧的聚合再合并一次。
 
@@ -102,7 +107,7 @@ FROM timeSeriesSelector(db, table, selector, min_time, max_time, 'minute_rollups
 GROUP BY group
 ```
 
-`min` 读 `min`。`sum` 读 `sum`。`count` 读 `count`。`avg` 读 `sum` 与 `count`。`present_over_time` 在窗口内 `count` 之和大于 0 时为 1。`quantile_over_time` 对相交分钟的 `quantile` 状态做 `quantileTDigestMerge`，再取分位数。
+`min` 读 `min`。`sum` 读 `sum`。`count` 读 `count`。`avg` 读 `sum` 与 `count`。`present_over_time` 在窗口内 `count` 之和大于 0 时为 1。`quantile_over_time` 对相交分钟的 `quantile` 状态做 `quantileTDigestMerge`，再取分位数。`stddev_over_time` 和 `stdvar_over_time` 对相交分钟的 `variance` 状态做 Chan 合并，再取 `sqrt(m2 / count)` 和 `m2 / count`。
 
 函数与列的对应关系：
 
@@ -115,8 +120,10 @@ GROUP BY group
 | `count_over_time` | 分钟 rollup | 相交分钟的 `count` 相加 |
 | `present_over_time` | 分钟 rollup | 相交分钟的 `count` 之和大于 0 则为 1 |
 | `quantile_over_time` | 分钟 rollup | 相交分钟的 t-digest 状态 `-Merge` |
+| `stddev_over_time` | 分钟 rollup | 相交分钟的 `{count, mean, m2}` 做 Chan 合并，再取 `sqrt(m2 / count)` |
+| `stdvar_over_time` | 分钟 rollup | 同上，结果是 `m2 / count` |
 | `rate`、`deriv` | `samples` | 每秒斜率。任何窗口和步长都读原始点，保持现有 ToGrid |
-| `irate`、`increase`、`delta`、`idelta`、`changes`、`resets`、`predict_linear`、`first_over_time`、`last_over_time`、`ts_of_*`、`stddev_over_time`、`stdvar_over_time`、`mad_over_time` | 分钟 rollup | 这些函数不是 `rate` / `deriv`，扫描目标是分钟表。现有列还原不了原始点的顺序、端点时间戳和重置。网格点结果为空，不为它们改读 `samples` |
+| `irate`、`increase`、`delta`、`idelta`、`changes`、`resets`、`predict_linear`、`first_over_time`、`last_over_time`、`ts_of_*`、`mad_over_time` | 分钟 rollup | 这些函数不是 `rate` / `deriv`，扫描目标是分钟表。现有列还原不了原始点的顺序、端点时间戳和重置。网格点结果为空，不为它们改读 `samples` |
 | `histogram_quantile` | 取决于内层 | 它本身吃的是 instant vector。内层是 `rate` 或 `deriv` 时读 `samples`。内层是其他函数时读分钟 rollup |
 | 精确时间戳（`timestamp`） | 分钟 rollup | 不是 `rate` / `deriv`，读分钟表。能返回的时间是 `bucket` 边界，不是原始样本的时间戳 |
 
