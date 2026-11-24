@@ -157,7 +157,9 @@ GROUP BY group
 
 ## 测试
 
-用 `./tests/queries/0_stateless/add-test` 新增 `.sql` 测试，不扩已有测试文件。
+### 正确性
+
+用 `./tests/queries/0_stateless/add-test` 新增 `.sql` 测试，不扩已有测试文件。无状态测试只检查结果和 `EXPLAIN` 里的表名，不测耗时。
 
 - `store_minute_rollups = 1` 时，对齐的 `max_over_time` / `min_over_time` / `count_over_time` 与关掉查询设置时的原始点结果逐值相同。数据包含整分钟边界上的点、边界内 1 tick 的点、stale marker，以及同一时间戳的两个值。
 - `sum_over_time` 和 `avg_over_time` 允许相对误差。
@@ -166,3 +168,23 @@ GROUP BY group
 - 窗口不对齐或步长小于 1 分钟时，`rate` 和 `deriv` 的读取目标是 `minuterollups`。
 - `time_series_use_minute_rollups = 0` 时读取目标回到 `samples`。
 - `store_minute_rollups = 0` 时不创建 `minuterollups` 内表。
+
+### 性能
+
+新增 `tests/performance/timeseries_minute_rollups.xml`。同一份数据写进两张 `TimeSeries` 表：`ts_off` 的 `store_minute_rollups = 0`，`ts_on` 的 `store_minute_rollups = 1`。点先写入一张普通 `MergeTree`，再 `INSERT SELECT` 进这两张表，这样两次写入的源数据相同，测到的是 `TimeSeriesSink` 的差别。
+
+写入和查询分开测。系列数、时间跨度和采集间隔取两档，都优化成一个 part 后再查：
+
+- 密采集：约 15 秒一个点。一分钟里有多个原始点，rollup 把它们收成一行。
+- 稀采集：约 60 秒一个点。分钟行和原始点数接近，查询少读的主要是小时桶里窗口以外的点。
+
+写入测这两次 `INSERT SELECT` 的耗时，并记下 `system.parts` 里 `samples` 与 `minuterollups` 的字节数。`ts_on` 在 `samples` 之外多写一张表，耗时和字节都高于 `ts_off`。密采集时多出来的是每条序列每分钟一行窄记录；稀采集时分钟行数和原始点数同量级。
+
+查询在两张表都写完之后测，语句用 `FORMAT Null`。每条查询都对 `ts_off`、`ts_on`，以及 `ts_on` 上 `time_series_use_minute_rollups = 0` 各跑一遍：
+
+- 对齐的 `max_over_time(...[15m])`，步长 1 分钟。`ts_on` 读分钟行，`ts_off` 和关掉查询设置的那次读 `samples`。密采集时两边读的行数差最大。
+- 同样的 `max_over_time`，数据用稀采集那一档。
+- 对齐的 `rate` 和 `deriv`，步长 1 分钟。两边都读 `samples`，耗时应接近。
+- 步长 30 秒的 `max_over_time`。`ts_on` 仍读 `minuterollups`，`ts_off` 读 `samples`。
+
+性能框架按查询和 master 比。本文件里的对照是同一个 XML 里的成对查询：开着 rollup 的写入对关着的写入，走分钟表的 `max_over_time` 对走 `samples` 的同文查询。评审看这两对的耗时比，以及密采集和稀采集哪个差得更多。无状态测试里不写耗时断言。
