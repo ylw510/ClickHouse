@@ -4,16 +4,21 @@
 
 ## 查询路由
 
-`rate` 和 `deriv` 算的是窗口里每秒变化的斜率。分钟行只有 `max`、`min`、`sum`、`count` 和 `quantile`，没有相邻原始点的时间差，也没有计数器重置。对齐、不对齐、步长大于或小于 1 分钟，都不能从这张表得出这个斜率。这两种函数始终读 `samples`（时间范围落在 TTL 内时仍可走 `recent samples`），走现有的 `timeSeriesRateToGrid` 和 `timeSeriesDerivToGrid`。
+分钟行能回答的，是窗口里可以合并的汇总：`max`、`min`、`sum`、`count`、`avg`（`sum / count`）、`present_over_time` 与 `absent_over_time`（`count` 是否大于 0）、`quantile_over_time`（t-digest）、`stddev_over_time` 与 `stdvar_over_time`（`{count, mean, m2}`）。这些函数在 rollup 开启时读分钟表，窗口不对齐或步长小于 1 分钟也读这张表。
 
-其余函数在 rollup 开启时读分钟表。窗口不对齐、步长小于 1 分钟，也读这张表：
+下面这些函数要的量不在分钟行里，任何窗口和步长都读 `samples`（时间范围落在 TTL 内时仍可走 `recent samples`），走现有的 ToGrid：
+
+- `rate`、`deriv`、`irate`、`idelta`、`increase`、`delta`、`changes`、`resets`、`predict_linear`：每秒斜率，或相邻原始点的差、重置和回归。
+- `first_over_time`、`last_over_time`、即时 selector（实现是 `last_over_time`）：某一个原始点的值。
+- `ts_of_first_over_time`、`ts_of_last_over_time`、`ts_of_max_over_time`、`ts_of_min_over_time`，以及直接作用在 selector 上的 `timestamp`：那个点的时间戳。
+- `mad_over_time`：各点相对中位数的绝对偏差的中位数。值的 t-digest 合并不出这个数。
+
+`histogram_quantile` 自己不读存储。内层是上面读 `samples` 的函数或即时 selector 时，内层读 `samples`；内层是 `max_over_time` 这类时，内层读分钟表。
 
 | 函数 | 窗口 | 步长 | 读取 |
 | --- | --- | --- | --- |
-| `rate` 或 `deriv` | 任意 | 任意 | `samples`（或 TTL 内的 `recent samples`） |
-| 其他函数 | 任意 | 任意 | 分钟 rollup |
-
-`max_over_time`、`min_over_time`、`sum_over_time`、`avg_over_time`、`count_over_time`、`present_over_time`、`quantile_over_time`、`irate`、`increase`、`histogram_quantile`、精确时间戳，以及其他不是 `rate` / `deriv` 的函数，不论窗口是否对齐、步长是否小于 1 分钟，都读分钟 rollup。
+| `max_over_time`、`min_over_time`、`sum_over_time`、`avg_over_time`、`count_over_time`、`present_over_time`、`absent_over_time`、`quantile_over_time`、`stddev_over_time`、`stdvar_over_time` | 任意 | 任意 | 分钟 rollup |
+| `rate`、`deriv`、`irate`、`idelta`、`increase`、`delta`、`changes`、`resets`、`predict_linear`、`first_over_time`、`last_over_time`、`ts_of_*`、`mad_over_time`、selector 上的 `timestamp`、即时 selector | 任意 | 任意 | `samples`（或 TTL 内的 `recent samples`） |
 
 表设置或查询设置把 rollup 关掉时，没有这张表可读，所有函数仍走现有的 `samples` 路径。这是功能开关，不是查询失败后的另一条算法。
 
@@ -94,7 +99,7 @@ PromQL 和 `AggregateFunctionTimeseriesBase` 的窗口都是 `(t - window, t]`�
 
 窗口对齐且是整分钟时，相交的分钟集合就等于窗口本身。`max_over_time(cpu_usage{job="node"}[15m])` 在步长 1 分钟、网格落在整分钟上时，每个网格点是这 15 行的 `max` 再取 `max`。`min`、`sum`、`count` 同样。`avg` 是这 15 行的 `sum` 之和除以 `count` 之和。即时查询在一个求值点上读约 `window / 60` 行。`query_range` 按 `(id, bucket)` 扫过覆盖所有网格窗口的分钟，相邻窗口复用同一行。
 
-`rate` 和 `deriv` 不进入这条路径。其他函数在窗口不对齐或步长小于 1 分钟时，仍然扫分钟表。边界分钟整行计入，所以实际覆盖比 `(t - window, t]` 稍宽，宽度最多不到 1 分钟。步长不是整分钟（例如 90 秒）时同样处理。
+读 `samples` 的函数不进入这条路径。能由分钟状态合并的函数，在窗口不对齐或步长小于 1 分钟时仍然扫分钟表。边界分钟整行计入，所以实际覆盖比 `(t - window, t]` 稍宽，宽度最多不到 1 分钟。步长不是整分钟（例如 90 秒）时同样处理。
 
 `GROUP BY` 之后把结果 `CAST` 成 `Array(Nullable(Float64))`，并按现有规则丢掉 metric name。
 
@@ -118,14 +123,15 @@ GROUP BY group
 | `sum_over_time` | 分钟 rollup | 相交分钟的 `sum` 相加 |
 | `avg_over_time` | 分钟 rollup | 相交分钟的 `sum` 之和 / `count` 之和 |
 | `count_over_time` | 分钟 rollup | 相交分钟的 `count` 相加 |
-| `present_over_time` | 分钟 rollup | 相交分钟的 `count` 之和大于 0 则为 1 |
+| `present_over_time`、`absent_over_time` | 分钟 rollup | 相交分钟的 `count` 之和大于 0 则存在；`absent_over_time` 取相反结果 |
 | `quantile_over_time` | 分钟 rollup | 相交分钟的 t-digest 状态 `-Merge` |
 | `stddev_over_time` | 分钟 rollup | 相交分钟的 `{count, mean, m2}` 做 Chan 合并，再取 `sqrt(m2 / count)` |
 | `stdvar_over_time` | 分钟 rollup | 同上，结果是 `m2 / count` |
-| `rate`、`deriv` | `samples` | 每秒斜率。任何窗口和步长都读原始点，保持现有 ToGrid |
-| `irate`、`increase`、`delta`、`idelta`、`changes`、`resets`、`predict_linear`、`first_over_time`、`last_over_time`、`ts_of_*`、`mad_over_time` | 分钟 rollup | 这些函数不是 `rate` / `deriv`，扫描目标是分钟表。现有列还原不了原始点的顺序、端点时间戳和重置。网格点结果为空，不为它们改读 `samples` |
-| `histogram_quantile` | 取决于内层 | 它本身吃的是 instant vector。内层是 `rate` 或 `deriv` 时读 `samples`。内层是其他函数时读分钟 rollup |
-| 精确时间戳（`timestamp`） | 分钟 rollup | 不是 `rate` / `deriv`，读分钟表。能返回的时间是 `bucket` 边界，不是原始样本的时间戳 |
+| `rate`、`deriv`、`irate`、`idelta`、`increase`、`delta`、`changes`、`resets`、`predict_linear` | `samples` | 每秒斜率，或相邻原始点的差、重置和回归 |
+| `first_over_time`、`last_over_time`、即时 selector | `samples` | 某一个原始点的值 |
+| `ts_of_*`、selector 上的 `timestamp` | `samples` | 那个点的时间戳 |
+| `mad_over_time` | `samples` | 各点相对中位数的绝对偏差的中位数 |
+| `histogram_quantile` | 取决于内层 | 内层读 `samples` 或分钟表，由内层函数决定 |
 
 空窗口返回 `NULL`，与 ToGrid 在窗口内没有点时一致。
 
@@ -159,7 +165,7 @@ GROUP BY group
 - `store_minute_rollups = 1` 时，对齐的 `max_over_time` / `min_over_time` / `count_over_time` 与关掉查询设置时的原始点结果逐值相同。数据包含整分钟边界上的点、边界内 1 tick 的点、stale marker，以及同一时间戳的两个值。
 - `sum_over_time` 和 `avg_over_time` 允许相对误差。
 - 窗口不对齐、步长 30 秒、步长 90 秒时，`EXPLAIN` 中 `max_over_time` 的读取目标是 `minuterollups`。
-- `rate` 和 `deriv` 在窗口对齐、窗口不对齐、步长 1 分钟和步长 30 秒时，读取目标都是 `samples`，结果与关掉 rollup 时相同。
+- `rate`、`deriv`、`irate`、`increase`、`delta`、`idelta`、`changes`、`resets`、`predict_linear`、`first_over_time`、`last_over_time`、`ts_of_max_over_time`、`mad_over_time` 在窗口对齐、窗口不对齐、步长 1 分钟和步长 30 秒时，读取目标都是 `samples`，结果与关掉 rollup 时相同。
 - `time_series_use_minute_rollups = 0` 时读取目标回到 `samples`。
 - `store_minute_rollups = 0` 时不创建 `minuterollups` 内表。
 
@@ -178,7 +184,7 @@ GROUP BY group
 
 - 对齐的 `max_over_time(...[15m])`，步长 1 分钟。`ts_on` 读分钟行，`ts_off` 和关掉查询设置的那次读 `samples`。密采集时两边读的行数差最大。
 - 同样的 `max_over_time`，数据用稀采集那一档。
-- `rate` 和 `deriv`，含步长 1 分钟和步长 30 秒。两边都读 `samples`，耗时应接近。开着 rollup 的表多写了一份分钟行，不改变这两条查询的读取。
+- `rate` 和 `last_over_time`，含步长 1 分钟和步长 30 秒。两边都读 `samples`，耗时应接近。开着 rollup 的表多写了一份分钟行，不改变这两条查询的读取。
 - 步长 30 秒的 `max_over_time`。`ts_on` 仍读 `minuterollups`，`ts_off` 读 `samples`。
 
 性能框架按查询和 master 比。本文件里的对照是同一个 XML 里的成对查询：开着 rollup 的写入对关着的写入，走分钟表的 `max_over_time` 对走 `samples` 的同文查询。评审看这两对的耗时比，以及密采集和稀采集哪个差得更多。无状态测试里不写耗时断言。
